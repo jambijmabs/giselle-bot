@@ -1,0 +1,7 @@
+
+flask
+twilio
+pandas
+openai
+psycopg2-binary
+google-cloud-storage
