@@ -2,12 +2,15 @@ import os
 import logging
 import sys
 import json
+import time
 from flask import Flask, request
 from twilio.rest import Client
 from google.cloud import storage
 from openai import OpenAI
 from datetime import datetime, timedelta
 import re
+import threading
+from collections import deque
 
 # Configure logging to output to stdout/stderr (Cloud Run captures these)
 logging.basicConfig(
@@ -46,6 +49,8 @@ if not os.getenv('GROK_API_KEY'):
 projects_data = {}
 downloadable_links = {}
 conversation_state = {}
+message_locks = {}  # To handle concurrency per phone number
+message_queues = {}  # To queue messages per phone number
 
 # File to store conversation state for recontact scheduling
 STATE_FILE = 'conversation_state.json'
@@ -197,21 +202,24 @@ def load_projects_from_folder(base_path='PROYECTOS'):
 # Split long messages into shorter consecutive messages
 def send_consecutive_messages(phone, messages):
     for msg in messages:
-        message = client.messages.create(
-            from_='whatsapp:+15557684099',
-            body=msg,
-            to=phone
-        )
-        logger.info(f"Mensaje enviado a través de Twilio: SID {message.sid}, Estado: {message.status}")
-        updated_message = client.messages(message.sid).fetch()
-        logger.info(f"Estado del mensaje actualizado: {updated_message.status}")
-        if updated_message.status == "failed":
-            logger.error(f"Error al enviar mensaje: {updated_message.error_code} - {updated_message.error_message}")
+        try:
+            message = client.messages.create(
+                from_='whatsapp:+15557684099',
+                body=msg,
+                to=phone
+            )
+            logger.info(f"Mensaje enviado a través de Twilio: SID {message.sid}, Estado: {message.status}")
+            updated_message = client.messages(message.sid).fetch()
+            logger.info(f"Estado del mensaje actualizado: {updated_message.status}")
+            if updated_message.status == "failed":
+                logger.error(f"Error al enviar mensaje: {updated_message.error_code} - {updated_message.error_message}")
+        except Exception as e:
+            logger.error(f"Error al enviar mensaje con Twilio: {str(e)}")
 
 # Schedule recontact for clients
 def schedule_recontact():
     current_time = datetime.now()
-    for phone, state in conversation_state.items():
+    for phone, state in list(conversation_state.items()):
         # Skip if client has indicated no interest
         if state.get('no_interest', False):
             continue
@@ -256,203 +264,209 @@ def schedule_recontact():
                 save_conversation_state()
                 save_conversation_history(phone, conversation_state[phone]['history'])
 
-# Webhook route for WhatsApp messages
-@app.route('/whatsapp', methods=['POST'])
-def whatsapp():
-    logger.debug("Entered /whatsapp route")
-    try:
-        logger.debug(f"Request form data: {request.form}")
-        incoming_msg = request.values.get('Body', '').strip()
-        phone = request.values.get('From', '')
+# Process message queue for a phone number
+def process_message_queue(phone):
+    if phone not in message_queues or not message_queues[phone]:
+        return
 
-        if not incoming_msg or not phone:
-            logger.error("No se encontraron 'Body' o 'From' en la solicitud")
-            return "Error: Solicitud incompleta", 400
+    while message_queues[phone]:
+        incoming_msg = message_queues[phone].popleft()
+        try:
+            logger.info(f"Procesando mensaje en cola para {phone}: {incoming_msg}")
 
-        logger.info(f"Mensaje recibido de {phone}: {incoming_msg}")
+            # Load conversation history from file
+            history = load_conversation_history(phone)
 
-        # Load conversation history from file
-        history = load_conversation_history(phone)
-
-        # Initialize conversation state if not exists
-        if phone not in conversation_state:
-            conversation_state[phone] = {
-                'history': history,
-                'name_asked': 0,
-                'budget_asked': 0,
-                'messages_since_budget_ask': 0,
-                'messages_without_response': 0,
-                'preferred_time': None,
-                'preferred_days': None,
-                'last_contact': datetime.now().isoformat(),
-                'recontact_attempts': 0,
-                'no_interest': False,
-                'schedule_next': None
-            }
-        else:
-            # Update history from file
-            conversation_state[phone]['history'] = history
-            conversation_state[phone]['messages_without_response'] = 0
-
-        # Update conversation history
-        conversation_state[phone]['history'].append(f"Cliente: {incoming_msg}")
-        # Keep only the last 5 messages to avoid overloading the prompt
-        conversation_state[phone]['history'] = conversation_state[phone]['history'][-5:]
-
-        # Update last contact time
-        conversation_state[phone]['last_contact'] = datetime.now().isoformat()
-
-        # Increment messages since last budget ask
-        conversation_state[phone]['messages_since_budget_ask'] += 1
-
-        # Check if the client indicates no interest
-        no_interest_phrases = [
-            "no me interesa", "no estoy interesado", "no quiero comprar",
-            "no gracias", "no por el momento", "no estoy buscando"
-        ]
-        if any(phrase in incoming_msg.lower() for phrase in no_interest_phrases):
-            conversation_state[phone]['no_interest'] = True
-            messages = ["Entendido, gracias por tu tiempo. Si cambias de opinión, aquí estaré."]
-            send_consecutive_messages(phone, messages)
-            conversation_state[phone]['history'].append("Giselle: Entendido, gracias por tu tiempo. Si cambias de opinión, aquí estaré.")
-            save_conversation_state()
-            save_conversation_history(phone, conversation_state[phone]['history'])
-            return "Mensaje enviado"
-
-        # Check if the client requests to be contacted later
-        if "próxima semana" in incoming_msg.lower() or "la próxima semana" in incoming_msg.lower():
-            schedule_time = datetime.now() + timedelta(days=7)
-            # Use preferred time if available, otherwise default to 10:00 AM
-            preferred_time = conversation_state[phone].get('preferred_time', '10:00 AM')
-            schedule_time = schedule_time.replace(
-                hour=int(preferred_time.split(':')[0]) if ':' in preferred_time else 10,
-                minute=int(preferred_time.split(':')[1].replace(' AM', '').replace(' PM', '')) if ':' in preferred_time else 0,
-                second=0,
-                microsecond=0
-            )
-            if 'PM' in preferred_time.upper() and schedule_time.hour < 12:
-                schedule_time = schedule_time.replace(hour=schedule_time.hour + 12)
-            conversation_state[phone]['schedule_next'] = {'time': schedule_time.isoformat()}
-            messages = ["Perfecto, te contactaré la próxima semana. ¡Que tengas un buen día!"]
-            send_consecutive_messages(phone, messages)
-            conversation_state[phone]['history'].append("Giselle: Perfecto, te contactaré la próxima semana. ¡Que tengas un buen día!")
-            save_conversation_state()
-            save_conversation_history(phone, conversation_state[phone]['history'])
-            return "Mensaje enviado"
-
-        # Prepare project information for the prompt
-        project_info = ""
-        for project, data in projects_data.items():
-            project_info += f"Proyecto: {project}\n"
-            project_info += f"Información: {data}\n"
-            if project in downloadable_files and downloadable_files[project]:
-                project_info += "Archivos descargables:\n"
-                for file in downloadable_files[project]:
-                    link = downloadable_links.get(project, {}).get(file, "Enlace no disponible")
-                    project_info += f"- {file}: {link}\n"
-            project_info += "\n"
-
-        # Prepare conversation history for the prompt
-        conversation_history = "\n".join(conversation_state[phone]['history'])
-
-        # Determine if we should ask for the name, budget, or preferred contact time
-        ask_name = (
-            conversation_state[phone]['name_asked'] < 2 and
-            "Cliente: Hola" in conversation_history and
-            not any("Mi nombre es" in msg for msg in conversation_history)
-        )
-        ask_budget = (
-            conversation_state[phone]['budget_asked'] < 2 and
-            conversation_state[phone]['messages_since_budget_ask'] >= 2 and
-            not any("Mi presupuesto es" in msg or "presupuesto de" in msg.lower() for msg in conversation_history)
-        )
-        ask_contact_time = (
-            conversation_state[phone]['messages_without_response'] >= 2 and
-            not conversation_state[phone].get('preferred_time') and
-            not conversation_state[phone].get('preferred_days')
-        )
-
-        # Build the prompt
-        prompt = (
-            f"Eres Giselle, una asesora de ventas de FAV Living, una empresa inmobiliaria. "
-            f"Tu objetivo es vender propiedades inmobiliarias de manera natural e improvisada, como lo haría una vendedora real. "
-            f"No uses respuestas predefinidas ni intentes estructurar la conversación de manera rígida. "
-            f"Responde únicamente basándote en la información de los proyectos que tienes disponible, sin inventar información adicional. "
-            f"Actúa como Grok, respondiendo de forma fluida y profesional, enfocándote en la venta de propiedades. "
-            f"Si el cliente hace una pregunta y no tienes la información exacta para responder, di algo como 'No sé exactamente, pero déjame investigarlo' "
-            f"y continúa la conversación de manera natural. "
-            f"No uses emoticones ni compartas información personal sobre ti más allá de tu rol en FAV Living.\n\n"
-            f"**Instrucciones para las respuestas:**\n"
-            f"- Responde de manera breve y profesional, como lo haría un humano en WhatsApp (1-2 frases por mensaje).\n"
-            f"- Si la respuesta tiene más de 2 frases, divídela en mensajes consecutivos (separa el texto en varias partes, cada una de 1-2 frases).\n"
-            f"- No uses viñetas ni formatos estructurados; escribe de forma fluida como un humano.\n"
-            f"- Si es la primera interacción, preséntate brevemente como asesora de ventas de FAV Living.\n"
-            f"- Si el cliente solicita información adicional o documentos (como presentaciones, precios, renders), incluye los nombres de los "
-            f"archivos descargables correspondientes si están disponibles, sin inventar enlaces.\n"
-            f"- Pregunta por el nombre del cliente de manera natural, pero no más de 1-2 veces en toda la conversación si no responde.\n"
-            f"- Pregunta por el presupuesto del cliente de manera natural, pero no insistas; si no responde, vuelve a preguntar solo después de 2-3 mensajes "
-            f"si es oportuno y relevante para la conversación.\n"
-            f"- Si el cliente no ha respondido después de 2 mensajes, pregunta por su horario y días preferidos de contacto de manera natural, "
-            f"para intentar recontactarlo más tarde.\n\n"
-            f"**Información de los proyectos disponibles:**\n"
-            f"{project_info}\n\n"
-            f"**Historial de conversación:**\n"
-            f"{conversation_history}\n\n"
-            f"**Mensaje del cliente:** \"{incoming_msg}\"\n\n"
-            f"Responde de forma breve y profesional, enfocándote en la venta de propiedades. Improvisa de manera natural, utilizando únicamente la información de los proyectos y archivos descargables proporcionados."
-        )
-
-        # Update conversation state if asking for name, budget, or contact time
-        if ask_name:
-            conversation_state[phone]['name_asked'] += 1
-        if ask_budget:
-            conversation_state[phone]['budget_asked'] += 1
-            conversation_state[phone]['messages_since_budget_ask'] = 0
-        if ask_contact_time:
-            conversation_state[phone]['messages_without_response'] = 0
-
-        logger.debug("Generating response with Grok")
-        response = grok_client.chat.completions.create(
-            model="grok-beta",
-            messages=[
-                {"role": "system", "content": "Eres Giselle, una asesora de ventas de FAV Living, utilizando la IA de Grok."},
-                {"role": "user", "content": prompt}
-            ]
-        )
-        reply = response.choices[0].message.content.strip()
-        logger.debug(f"Generated response: {reply}")
-
-        # Split the response into shorter messages if necessary
-        messages = []
-        current_message = ""
-        sentences = reply.split('. ')
-        for i, sentence in enumerate(sentences):
-            if not sentence:
-                continue
-            sentence = sentence.strip() + ('.' if i < len(sentences) - 1 else '')
-            if len(current_message.split('\n')) < 2:
-                current_message += (sentence + ' ') if current_message else sentence
+            # Initialize conversation state if not exists
+            if phone not in conversation_state:
+                conversation_state[phone] = {
+                    'history': history,
+                    'name_asked': 0,
+                    'budget_asked': 0,
+                    'messages_since_budget_ask': 0,
+                    'messages_without_response': 0,
+                    'preferred_time': None,
+                    'preferred_days': None,
+                    'last_contact': datetime.now().isoformat(),
+                    'recontact_attempts': 0,
+                    'no_interest': False,
+                    'schedule_next': None
+                }
             else:
-                messages.append(current_message.strip())
-                current_message = sentence
-        if current_message:
-            messages.append(current_message.strip())
+                # Update history from file
+                conversation_state[phone]['history'] = history
+                conversation_state[phone]['messages_without_response'] = 0
 
-        # If no messages were generated (e.g., Grok failed to respond), use a fallback
-        if not messages:
-            messages = ["No sé exactamente, pero déjame investigarlo."]
+            # Update conversation history
+            conversation_state[phone]['history'].append(f"Cliente: {incoming_msg}")
+            # Keep only the last 5 messages to avoid overloading the prompt
+            conversation_state[phone]['history'] = conversation_state[phone]['history'][-5:]
 
-        # Send consecutive messages
-        send_consecutive_messages(phone, messages)
+            # Update last contact time
+            conversation_state[phone]['last_contact'] = datetime.now().isoformat()
 
-        # Update conversation history with the response
-        for msg in messages:
-            conversation_state[phone]['history'].append(f"Giselle: {msg}")
-        conversation_state[phone]['history'] = conversation_state[phone]['history'][-5:]
+            # Increment messages since last budget ask
+            conversation_state[phone]['messages_since_budget_ask'] += 1
 
-        # Save conversation state and history
-        save_conversation_state()
-        save_conversation_history(phone, conversation_state[phone]['history'])
+            # Check if the client indicates no interest
+            no_interest_phrases = [
+                "no me interesa", "no estoy interesado", "no quiero comprar",
+                "no gracias", "no por el momento", "no estoy buscando"
+            ]
+            if any(phrase in incoming_msg.lower() for phrase in no_interest_phrases):
+                conversation_state[phone]['no_interest'] = True
+                messages = ["Entendido, gracias por tu tiempo. Si cambias de opinión, aquí estaré."]
+                send_consecutive_messages(phone, messages)
+                conversation_state[phone]['history'].append("Giselle: Entendido, gracias por tu tiempo. Si cambias de opinión, aquí estaré.")
+                save_conversation_state()
+                save_conversation_history(phone, conversation_state[phone]['history'])
+                continue
+
+            # Check if the client requests to be contacted later
+            if "próxima semana" in incoming_msg.lower() or "la próxima semana" in incoming_msg.lower():
+                schedule_time = datetime.now() + timedelta(days=7)
+                # Use preferred time if available, otherwise default to 10:00 AM
+                preferred_time = conversation_state[phone].get('preferred_time', '10:00 AM')
+                schedule_time = schedule_time.replace(
+                    hour=int(preferred_time.split(':')[0]) if ':' in preferred_time else 10,
+                    minute=int(preferred_time.split(':')[1].replace(' AM', '').replace(' PM', '')) if ':' in preferred_time else 0,
+                    second=0,
+                    microsecond=0
+                )
+                if 'PM' in preferred_time.upper() and schedule_time.hour < 12:
+                    schedule_time = schedule_time.replace(hour=schedule_time.hour + 12)
+                conversation_state[phone]['schedule_next'] = {'time': schedule_time.isoformat()}
+                messages = ["Perfecto, te contactaré la próxima semana. ¡Que tengas un buen día!"]
+                send_consecutive_messages(phone, messages)
+                conversation_state[phone]['history'].append("Giselle: Perfecto, te contactaré la próxima semana. ¡Que tengas un buen día!")
+                save_conversation_state()
+                save_conversation_history(phone, conversation_state[phone]['history'])
+                continue
+
+            # Prepare project information for the prompt
+            project_info = ""
+            for project, data in projects_data.items():
+                project_info += f"Proyecto: {project}\n"
+                project_info += f"Información: {data}\n"
+                if project in downloadable_files and downloadable_files[project]:
+                    project_info += "Archivos descargables:\n"
+                    for file in downloadable_files[project]:
+                        link = downloadable_links.get(project, {}).get(file, "Enlace no disponible")
+                        project_info += f"- {file}: {link}\n"
+                project_info += "\n"
+
+            # Prepare conversation history for the prompt
+            conversation_history = "\n".join(conversation_state[phone]['history'])
+
+            # Determine if we should ask for the name, budget, or preferred contact time
+            ask_name = (
+                conversation_state[phone]['name_asked'] < 2 and
+                "Cliente: Hola" in conversation_history and
+                not any("Mi nombre es" in msg for msg in conversation_history)
+            )
+            ask_budget = (
+                conversation_state[phone]['budget_asked'] < 2 and
+                conversation_state[phone]['messages_since_budget_ask'] >= 2 and
+                not any("Mi presupuesto es" in msg or "presupuesto de" in msg.lower() for msg in conversation_history)
+            )
+            ask_contact_time = (
+                conversation_state[phone]['messages_without_response'] >= 2 and
+                not conversation_state[phone].get('preferred_time') and
+                not conversation_state[phone].get('preferred_days')
+            )
+
+            # Build the prompt
+            prompt = (
+                f"Eres Giselle, una asesora de ventas de FAV Living, una empresa inmobiliaria. "
+                f"Tu objetivo es vender propiedades inmobiliarias de manera natural e improvisada, como lo haría una vendedora real. "
+                f"No uses respuestas predefinidas ni intentes estructurar la conversación de manera rígida. "
+                f"Responde únicamente basándote en la información de los proyectos que tienes disponible, sin inventar información adicional. "
+                f"Actúa como Grok, respondiendo de forma fluida y profesional, enfocándote en la venta de propiedades. "
+                f"Si el cliente hace una pregunta y no tienes la información exacta para responder, di algo como 'No sé exactamente, pero déjame investigarlo' "
+                f"y continúa la conversación de manera natural. "
+                f"No uses emoticones ni compartas información personal sobre ti más allá de tu rol en FAV Living.\n\n"
+                f"**Instrucciones para las respuestas:**\n"
+                f"- Responde de manera breve y profesional, como lo haría un humano en WhatsApp (1-2 frases por mensaje).\n"
+                f"- Si la respuesta tiene más de 2 frases, divídela en mensajes consecutivos (separa el texto en varias partes, cada una de 1-2 frases).\n"
+                f"- No uses viñetas ni formatos estructurados; escribe de forma fluida como un humano.\n"
+                f"- Si es la primera interacción, preséntate brevemente como asesora de ventas de FAV Living.\n"
+                f"- Si el cliente solicita información adicional o documentos (como presentaciones, precios, renders), incluye los nombres de los "
+                f"archivos descargables correspondientes si están disponibles, sin inventar enlaces.\n"
+                f"- Pregunta por el nombre del cliente de manera natural, pero no más de 1-2 veces en toda la conversación si no responde.\n"
+                f"- Pregunta por el presupuesto del cliente de manera natural, pero no insistas; si no responde, vuelve a preguntar solo después de 2-3 mensajes "
+                f"si es oportuno y relevante para la conversación.\n"
+                f"- Si el cliente no ha respondido después de 2 mensajes, pregunta por su horario y días preferidos de contacto de manera natural, "
+                f"para intentar recontactarlo más tarde.\n\n"
+                f"**Información de los proyectos disponibles:**\n"
+                f"{project_info}\n\n"
+                f"**Historial de conversación:**\n"
+                f"{conversation_history}\n\n"
+                f"**Mensaje del cliente:** \"{incoming_msg}\"\n\n"
+                f"Responde de forma breve y profesional, enfocándote en la venta de propiedades. Improvisa de manera natural, utilizando únicamente la información de los proyectos y archivos descargables proporcionados."
+            )
+
+            # Update conversation state if asking for name, budget, or contact time
+            if ask_name:
+                conversation_state[phone]['name_asked'] += 1
+            if ask_budget:
+                conversation_state[phone]['budget_asked'] += 1
+                conversation_state[phone]['messages_since_budget_ask'] = 0
+            if ask_contact_time:
+                conversation_state[phone]['messages_without_response'] = 0
+
+            # Generate response with Grok (with retries)
+            logger.debug("Generating response with Grok")
+            reply = None
+            for attempt in range(3):  # Retry up to 3 times
+                try:
+                    response = grok_client.chat.completions.create(
+                        model="grok-beta",
+                        messages=[
+                            {"role": "system", "content": "Eres Giselle, una asesora de ventas de FAV Living, utilizando la IA de Grok."},
+                            {"role": "user", "content": prompt}
+                        ],
+                        timeout=5  # Reduced timeout to 5 seconds per attempt
+                    )
+                    reply = response.choices[0].message.content.strip()
+                    logger.debug(f"Generated response: {reply}")
+                    break
+                except Exception as e:
+                    logger.warning(f"Attempt {attempt + 1} failed: {str(e)}")
+                    if attempt == 2:  # Last attempt
+                        logger.error(f"Failed to generate response after 3 attempts: {str(e)}")
+                        reply = None
+                    time.sleep(1)  # Wait before retrying
+
+            # Split the response into shorter messages if necessary
+            messages = []
+            if reply:
+                current_message = ""
+                sentences = reply.split('. ')
+                for i, sentence in enumerate(sentences):
+                    if not sentence:
+                        continue
+                    sentence = sentence.strip() + ('.' if i < len(sentences) - 1 else '')
+                    if len(current_message.split('\n')) < 2:
+                        current_message += (sentence + ' ') if current_message else sentence
+                    else:
+                        messages.append(current_message.strip())
+                        current_message = sentence
+                if current_message:
+                    messages.append(current_message.strip())
+            else:
+                messages = ["dame unos minutos.."]
+
+            # Send consecutive messages
+            send_consecutive_messages(phone, messages)
+
+            # Update conversation history with the response
+            for msg in messages:
+                conversation_state[phone]['history'].append(f"Giselle: {msg}")
+            conversation_state[phone]['history'] = conversation_state[phone]['history'][-5:]
+
+            # Save conversation state and history
+            save_conversation_state()
+            save_conversation_history(phone, conversation_state[phone]['history'])
 
         logger.debug("Returning success response")
         return "Mensaje enviado"
@@ -462,28 +476,44 @@ def whatsapp():
         try:
             message = client.messages.create(
                 from_='whatsapp:+15557684099',
-                body="Lo siento, ocurrió un error. ¿En qué más puedo ayudarte?",
+                body="dame unos minutos..",
                 to=phone
             )
             logger.info(f"Fallback message sent: SID {message.sid}, Estado: {message.status}")
-            conversation_state[phone]['history'].append("Giselle: Lo siento, ocurrió un error. ¿En qué más puedo ayudarte?")
-            save_conversation_state()
-            save_conversation_history(phone, conversation_state[phone]['history'])
+            if phone in conversation_state:
+                conversation_state[phone]['history'].append("Giselle: dame unos minutos..")
+                save_conversation_state()
+                save_conversation_history(phone, conversation_state[phone]['history'])
         except Exception as twilio_e:
             logger.error(f"Error sending fallback message: {str(twilio_e)}")
         return "Error interno del servidor", 500
 
-# Root route for simple testing
-@app.route('/', methods=['GET'])
-def root():
-    logger.debug("Solicitud GET recibida en /")
-    return "Servidor Flask está funcionando!"
+# Webhook route for WhatsApp messages (enqueue messages)
+@app.route('/whatsapp', methods=['POST'])
+def whatsapp():
+    logger.debug("Entered /whatsapp route")
+    try:
+        incoming_msg = request.values.get('Body', '').strip()
+        phone = request.values.get('From', '')
 
-# Test endpoint to verify the server is running
-@app.route('/test', methods=['GET'])
-def test():
-    logger.debug("Solicitud GET recibida en /test")
-    return "Servidor Flask está funcionando correctamente!"
+        if not incoming_msg or not phone:
+            logger.error("No se encontraron 'Body' o 'From' en la solicitud")
+            return "Error: Solicitud incompleta", 400
+
+        logger.info(f"Mensaje recibido de {phone}: {incoming_msg}")
+
+        # Enqueue the message
+        if phone not in message_queues:
+            message_queues[phone] = deque()
+        message_queues[phone].append(incoming_msg)
+
+        # Process the queue
+        threading.Thread(target=process_message_queue, args=(phone,)).start()
+
+        return "Mensaje en cola", 200
+    except Exception as e:
+        logger.error(f"Error al encolar mensaje: {str(e)}")
+        return "Error interno del servidor", 500
 
 # Route to trigger recontact scheduling (can be called periodically)
 @app.route('/schedule_recontact', methods=['GET'])
