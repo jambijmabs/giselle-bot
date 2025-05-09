@@ -103,8 +103,9 @@ def save_conversation_history(phone, history):
     except Exception as e:
         logger.error(f"Error saving conversation history for {phone}: {str(e)}")
 
-# Function to download files from Cloud Storage
+# Function to download files from Cloud Storage (called in background thread)
 def download_projects_from_storage(bucket_name='giselle-projects', base_path='PROYECTOS'):
+    global projects_data, downloadable_links
     try:
         if not os.path.exists(base_path):
             os.makedirs(base_path)
@@ -122,7 +123,6 @@ def download_projects_from_storage(bucket_name='giselle-projects', base_path='PR
             logger.info(f"Descargado archivo desde Cloud Storage: {local_path}")
     except Exception as e:
         logger.error(f"Error downloading projects from Cloud Storage: {str(e)}", exc_info=True)
-        raise
 
 # Function to extract text from .txt files
 def extract_text_from_txt(txt_path):
@@ -137,6 +137,7 @@ def extract_text_from_txt(txt_path):
 
 # Load projects from folder (dynamically detect projects)
 def load_projects_from_folder(base_path='PROYECTOS'):
+    global projects_data, downloadable_links
     downloadable_files = {}
 
     if not os.path.exists(base_path):
@@ -525,11 +526,9 @@ def trigger_recontact():
 # Load conversation state on startup
 load_conversation_state()
 
-# Download projects from Cloud Storage on startup
-download_projects_from_storage()
-
-# Load projects and downloadable files
-downloadable_files = load_projects_from_folder()
+# Start background thread to download projects (non-blocking)
+threading.Thread(target=download_projects_from_storage, daemon=True).start()
+threading.Thread(target=load_projects_from_folder, daemon=True).start()
 
 # Get the dynamic port from Cloud Run (default to 8080)
 port = int(os.getenv("PORT", 8080))
