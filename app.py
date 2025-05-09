@@ -29,29 +29,38 @@ app = Flask(__name__)
 # Configure logger
 logger = logging.getLogger(__name__)
 
+# Log startup
+logger.info("Starting GISELLE service...")
+
 # Configuration for Twilio (using environment variables)
 try:
     account_sid = os.getenv('TWILIO_ACCOUNT_SID')
     auth_token = os.getenv('TWILIO_AUTH_TOKEN')
+    logger.info(f"TWILIO_ACCOUNT_SID: {account_sid}")
+    logger.info(f"TWILIO_AUTH_TOKEN: {auth_token}")
     if not account_sid or not auth_token:
         logger.error("TWILIO_ACCOUNT_SID or TWILIO_AUTH_TOKEN not set in environment variables")
         raise ValueError("TWILIO_ACCOUNT_SID or TWILIO_AUTH_TOKEN not set")
     client = Client(account_sid, auth_token)
+    logger.info("Twilio client initialized successfully")
 except Exception as e:
-    logger.error(f"Failed to initialize Twilio client: {str(e)}")
+    logger.error(f"Failed to initialize Twilio client: {str(e)}", exc_info=True)
     raise
 
 # Configuration for Grok API (using environment variables)
 try:
-    grok_client = OpenAI(
-        api_key=os.getenv('GROK_API_KEY'),
-        base_url='https://api.x.ai/v1'
-    )
-    if not os.getenv('GROK_API_KEY'):
+    grok_api_key = os.getenv('GROK_API_KEY')
+    logger.info(f"GROK_API_KEY: {grok_api_key}")
+    if not grok_api_key:
         logger.error("GROK_API_KEY not set in environment variables")
         raise ValueError("GROK_API_KEY not set")
+    grok_client = OpenAI(
+        api_key=grok_api_key,
+        base_url='https://api.x.ai/v1'
+    )
+    logger.info("Grok client initialized successfully")
 except Exception as e:
-    logger.error(f"Failed to initialize Grok client: {str(e)}")
+    logger.error(f"Failed to initialize Grok client: {str(e)}", exc_info=True)
     raise
 
 # Dictionary to store project data, downloadable links, and conversation state
@@ -488,25 +497,25 @@ def process_message_queue(phone):
             save_conversation_state()
             save_conversation_history(phone, conversation_state[phone]['history'])
 
-        logger.debug("Returning success response")
-        return "Mensaje enviado"
-    except Exception as e:
-        logger.error(f"Error inesperado en /whatsapp: {str(e)}", exc_info=True)
-        # Send a fallback message to the user
-        try:
-            message = client.messages.create(
-                from_='whatsapp:+15557684099',
-                body="dame unos minutos..",
-                to=phone
-            )
-            logger.info(f"Fallback message sent: SID {message.sid}, Estado: {message.status}")
-            if phone in conversation_state:
-                conversation_state[phone]['history'].append("Giselle: dame unos minutos..")
-                save_conversation_state()
-                save_conversation_history(phone, conversation_state[phone]['history'])
-        except Exception as twilio_e:
-            logger.error(f"Error sending fallback message: {str(twilio_e)}")
-        return "Error interno del servidor", 500
+            logger.debug("Returning success response")
+            return "Mensaje enviado"
+        except Exception as e:
+            logger.error(f"Error inesperado en process_message_queue: {str(e)}", exc_info=True)
+            # Send a fallback message to the user
+            try:
+                message = client.messages.create(
+                    from_='whatsapp:+15557684099',
+                    body="dame unos minutos..",
+                    to=phone
+                )
+                logger.info(f"Fallback message sent: SID {message.sid}, Estado: {message.status}")
+                if phone in conversation_state:
+                    conversation_state[phone]['history'].append("Giselle: dame unos minutos..")
+                    save_conversation_state()
+                    save_conversation_history(phone, conversation_state[phone]['history'])
+            except Exception as twilio_e:
+                logger.error(f"Error sending fallback message: {str(twilio_e)}")
+            return "Error interno del servidor", 500
 
 # Webhook route for WhatsApp messages (enqueue messages)
 @app.route('/whatsapp', methods=['POST'])
@@ -532,7 +541,7 @@ def whatsapp():
 
         return "Mensaje en cola", 200
     except Exception as e:
-        logger.error(f"Error al encolar mensaje: {str(e)}")
+        logger.error(f"Error al encolar mensaje: {str(e)}", exc_info=True)
         return "Error interno del servidor", 500
 
 # Route to trigger recontact scheduling (can be called periodically)
@@ -552,7 +561,7 @@ def initialize():
         downloadable_files = load_projects_from_folder()
         return "Project data initialized", 200
     except Exception as e:
-        logger.error(f"Error initializing project data: {str(e)}")
+        logger.error(f"Error initializing project data: {str(e)}", exc_info=True)
         return f"Error initializing project data: {str(e)}", 500
 
 # Health check endpoint to verify the service is running
@@ -564,7 +573,7 @@ def health():
 try:
     load_conversation_state()
 except Exception as e:
-    logger.error(f"Failed to load conversation state on startup: {str(e)}")
+    logger.error(f"Failed to load conversation state on startup: {str(e)}", exc_info=True)
 
 # Get the dynamic port from Cloud Run (default to 8080)
 port = int(os.getenv("PORT", 8080))
