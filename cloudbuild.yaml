@@ -1,6 +1,6 @@
 
 steps:
 - name: 'gcr.io/cloud-builders/docker'
-  args: ['build', '-t', 'gcr.io/$PROJECT_ID/giselle-bot', '.']
+  args: ['build', '-t', 'gcr.io/$_PROJECT_ID/giselle-bot', '.']
 images:
-- 'gcr.io/$PROJECT_ID/giselle-bot'
+- 'gcr.io/$_PROJECT_ID/giselle-bot'
