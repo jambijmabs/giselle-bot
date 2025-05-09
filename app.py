@@ -37,7 +37,7 @@ try:
     account_sid = os.getenv('TWILIO_ACCOUNT_SID')
     auth_token = os.getenv('TWILIO_AUTH_TOKEN')
     logger.info(f"TWILIO_ACCOUNT_SID: {account_sid}")
-    logger.info(f"TWILIO_AUTH_TOKEN: {auth_token}")
+    logger.info(f"TWILIO_AUTH_TOKEN: {'<set>' if auth_token else '<not set>'}")
     if not account_sid or not auth_token:
         logger.error("TWILIO_ACCOUNT_SID or TWILIO_AUTH_TOKEN not set in environment variables")
         raise ValueError("TWILIO_ACCOUNT_SID or TWILIO_AUTH_TOKEN not set")
@@ -50,7 +50,7 @@ except Exception as e:
 # Configuration for Grok API (using environment variables)
 try:
     grok_api_key = os.getenv('GROK_API_KEY')
-    logger.info(f"GROK_API_KEY: {grok_api_key}")
+    logger.info(f"GROK_API_KEY: {'<set>' if grok_api_key else '<not set>'}")
     if not grok_api_key:
         logger.error("GROK_API_KEY not set in environment variables")
         raise ValueError("GROK_API_KEY not set")
@@ -85,7 +85,7 @@ def load_conversation_state():
             conversation_state = {}
             logger.info("No conversation state file found; starting fresh")
     except Exception as e:
-        logger.error(f"Error loading conversation state: {str(e)}")
+        logger.error(f"Error loading conversation state: {str(e)}", exc_info=True)
         conversation_state = {}
 
 # Save conversation state to file
@@ -95,7 +95,7 @@ def save_conversation_state():
             json.dump(conversation_state, f)
         logger.info("Conversation state saved to file")
     except Exception as e:
-        logger.error(f"Error saving conversation state: {str(e)}")
+        logger.error(f"Error saving conversation state: {str(e)}", exc_info=True)
 
 # Load conversation history from file
 def load_conversation_history(phone):
@@ -108,7 +108,7 @@ def load_conversation_history(phone):
             return history
         return []
     except Exception as e:
-        logger.error(f"Error loading conversation history for {phone}: {str(e)}")
+        logger.error(f"Error loading conversation history for {phone}: {str(e)}", exc_info=True)
         return []
 
 # Save conversation history to file
@@ -119,7 +119,7 @@ def save_conversation_history(phone, history):
             f.write('\n'.join(history))
         logger.info(f"Saved conversation history for {phone}")
     except Exception as e:
-        logger.error(f"Error saving conversation history for {phone}: {str(e)}")
+        logger.error(f"Error saving conversation history for {phone}: {str(e)}", exc_info=True)
 
 # Function to download files from Cloud Storage
 def download_projects_from_storage(bucket_name='giselle-projects', base_path='/tmp/PROYECTOS'):
@@ -561,7 +561,7 @@ def initialize():
         downloadable_files = load_projects_from_folder()
         return "Project data initialized", 200
     except Exception as e:
-        logger.error(f"Error initializing project data: {str(e)}", exc_info=True)
+        logger.error(f"Error initializing project data: {str(e)}")
         return f"Error initializing project data: {str(e)}", 500
 
 # Health check endpoint to verify the service is running
