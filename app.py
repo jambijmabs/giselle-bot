@@ -516,5 +516,5 @@ print("✅ Configura el webhook en Twilio con la URL pública del deployment + /
 
 if __name__ == '__main__':
     print("✅ Iniciando servidor Flask...")
-    app.run(host='0.0.0.0', port=port, debug=False)
+    app.run(host='0.0.0.0', port=8080, debug=True)
     print(f"✅ Servidor Flask iniciado en el puerto {port}.")
