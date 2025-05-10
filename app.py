@@ -10,7 +10,7 @@ from datetime import datetime, timedelta
 
 # Configuration Section
 # Define all variables that are prone to change here
-WHATSAPP_SENDER_NUMBER = "whatsapp:+15557571247"  # WhatsApp sender number
+WHATSAPP_SENDER_NUMBER = "whatsapp:+18188732305"  # WhatsApp sender number
 TWILIO_ACCOUNT_SID = os.getenv('TWILIO_ACCOUNT_SID')
 TWILIO_AUTH_TOKEN = os.getenv('TWILIO_AUTH_TOKEN')
 OPENAI_API_KEY = os.getenv('OPENAI_API_KEY')
