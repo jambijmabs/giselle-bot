@@ -7,11 +7,11 @@ from twilio.rest import Client
 from google.cloud import storage
 from openai import OpenAI
 from datetime import datetime, timedelta
+import time  # Added to fix NameError
 import bot_config
 
 # Configuration Section
-# Define all variables that are prone to change here
-WHATSAPP_SENDER_NUMBER = "whatsapp:+18188732305"  # Updated WhatsApp sender number
+WHATSAPP_SENDER_NUMBER = "whatsapp:+18188732305"
 TWILIO_ACCOUNT_SID = os.getenv('TWILIO_ACCOUNT_SID')
 TWILIO_AUTH_TOKEN = os.getenv('TWILIO_AUTH_TOKEN')
 OPENAI_API_KEY = os.getenv('OPENAI_API_KEY')
@@ -23,10 +23,10 @@ NO_INTEREST_PHRASES = [
     "no me interesa", "no estoy interesado", "no quiero comprar",
     "no gracias", "no por el momento", "no estoy buscando"
 ]
-WHATSAPP_TEMPLATE_SID = "HX1234567890abcdef1234567890abcdef"  # Replace with your template SID
+WHATSAPP_TEMPLATE_SID = "HX1234567890abcdef1234567890abcdef"
 WHATSAPP_TEMPLATE_VARIABLES = {"1": "Cliente"}
 
-# Configure logging to output to stdout/stderr (Cloud Run captures these)
+# Configure logging
 logging.basicConfig(
     level=logging.DEBUG,
     format='%(asctime)s - %(levelname)s - %(message)s',
@@ -66,6 +66,10 @@ conversation_state = {}
 def get_conversation_history_filename(phone):
     """Generate the filename for conversation history based on phone number."""
     return f"{phone.replace('+', '').replace(':', '_')}_conversation.txt"
+
+def get_client_info_filename(phone):
+    """Generate the filename for client info based on phone number."""
+    return f"client_info_{phone.replace('+', '').replace(':', '_')}.txt"
 
 def load_conversation_state():
     """Load conversation state from file."""
@@ -114,6 +118,26 @@ def save_conversation_history(phone, history):
         logger.info(f"Saved conversation history for {phone}")
     except Exception as e:
         logger.error(f"Error saving conversation history for {phone}: {str(e)}")
+
+def save_client_info(phone):
+    """Save client information to a text file."""
+    filename = get_client_info_filename(phone)
+    try:
+        client_info = conversation_state.get(phone, {})
+        name = client_info.get('client_name', 'No proporcionado')
+        budget = client_info.get('client_budget', 'No proporcionado')
+        preferred_days = client_info.get('preferred_days', 'No proporcionado')
+        preferred_time = client_info.get('preferred_time', 'No proporcionado')
+        
+        with open(filename, 'w', encoding='utf-8') as f:
+            f.write(f"Información del Cliente: {phone}\n")
+            f.write(f"Nombre: {name}\n")
+            f.write(f"Presupuesto: {budget}\n")
+            f.write(f"Días Preferidos: {preferred_days}\n")
+            f.write(f"Horario Preferido: {preferred_time}\n")
+        logger.info(f"Saved client info for {phone} to {filename}")
+    except Exception as e:
+        logger.error(f"Error saving client info for {phone}: {str(e)}")
 
 def download_projects_from_storage(bucket_name=GCS_BUCKET_NAME, base_path=GCS_BASE_PATH):
     """Download project files from Google Cloud Storage."""
@@ -236,7 +260,7 @@ def send_consecutive_messages(phone, messages):
 def schedule_recontact():
     """Schedule recontact for clients."""
     current_time = datetime.now()
-    for phone, state in conversation_state.items():
+    for phone, state in list(conversation_state.items()):
         if state.get('no_interest', False):
             continue
 
@@ -245,7 +269,16 @@ def schedule_recontact():
         schedule_next = state.get('schedule_next')
 
         if schedule_next:
-            schedule_time = datetime.fromisoformat(schedule_next['time'])
+            schedule_time_str = schedule_next.get('time')
+            try:
+                schedule_time = datetime.fromisoformat(schedule_time_str)
+            except ValueError as e:
+                logger.error(f"Error parsing schedule time for {phone}: {str(e)}")
+                state['schedule_next'] = None
+                save_conversation_state()
+                save_client_info(phone)
+                continue
+
             if current_time >= schedule_time:
                 preferred_time = state.get('preferred_time', '10:00 AM')
                 messages = [
@@ -260,6 +293,7 @@ def schedule_recontact():
                 conversation_state[phone]['history'].append("Giselle: Me pediste que te contactara. ¿Te interesa seguir hablando sobre el proyecto KABAN Holbox?")
                 save_conversation_state()
                 save_conversation_history(phone, conversation_state[phone]['history'])
+                save_client_info(phone)
             continue
 
         if last_contact and recontact_attempts < 3:
@@ -277,6 +311,7 @@ def schedule_recontact():
                 conversation_state[phone]['history'].append("Giselle: No hemos hablado en unos días. ¿Te gustaría saber más sobre KABAN Holbox?")
                 save_conversation_state()
                 save_conversation_history(phone, conversation_state[phone]['history'])
+                save_client_info(phone)
 
 # Routes
 @app.route('/whatsapp', methods=['POST'])
@@ -327,6 +362,7 @@ def whatsapp():
         logger.debug("Loading conversation history")
         try:
             history = load_conversation_history(phone)
+            logger.debug(f"Conversation history loaded: {history}")
         except Exception as history_e:
             logger.error(f"Error loading conversation history: {str(history_e)}", exc_info=True)
             history = []
@@ -338,10 +374,13 @@ def whatsapp():
                     'history': history,
                     'name_asked': 0,
                     'budget_asked': 0,
+                    'contact_time_asked': 0,  # New field to track if asked for contact time
                     'messages_since_budget_ask': 0,
                     'messages_without_response': 0,
                     'preferred_time': None,
                     'preferred_days': None,
+                    'client_name': None,  # New field for client name
+                    'client_budget': None,  # New field for client budget
                     'last_contact': datetime.now().isoformat(),
                     'recontact_attempts': 0,
                     'no_interest': False,
@@ -353,16 +392,20 @@ def whatsapp():
                 conversation_state[phone]['history'] = history
                 conversation_state[phone]['messages_without_response'] = 0
                 conversation_state[phone]['last_incoming_time'] = datetime.now().isoformat()
+            logger.debug(f"Conversation state initialized: {conversation_state[phone]}")
         except Exception as state_e:
             logger.error(f"Error initializing conversation state: {str(state_e)}", exc_info=True)
             conversation_state[phone] = {
                 'history': history,
                 'name_asked': 0,
                 'budget_asked': 0,
+                'contact_time_asked': 0,
                 'messages_since_budget_ask': 0,
                 'messages_without_response': 0,
                 'preferred_time': None,
                 'preferred_days': None,
+                'client_name': None,
+                'client_budget': None,
                 'last_contact': datetime.now().isoformat(),
                 'recontact_attempts': 0,
                 'no_interest': False,
@@ -375,11 +418,38 @@ def whatsapp():
         try:
             conversation_state[phone]['history'].append(f"Cliente: {incoming_msg}")
             conversation_state[phone]['history'] = conversation_state[phone]['history'][-5:]
+            logger.debug(f"Updated conversation history: {conversation_state[phone]['history']}")
         except Exception as history_update_e:
             logger.error(f"Error updating conversation history: {str(history_update_e)}", exc_info=True)
 
         conversation_state[phone]['last_contact'] = datetime.now().isoformat()
         conversation_state[phone]['messages_since_budget_ask'] += 1
+
+        # Check for client name in the message
+        if "mi nombre es" in incoming_msg.lower():
+            name = incoming_msg.lower().split("mi nombre es")[-1].strip()
+            conversation_state[phone]['client_name'] = name.capitalize()
+            logger.info(f"Client name set to: {conversation_state[phone]['client_name']}")
+            save_client_info(phone)
+
+        # Check for client budget in the message
+        if "mi presupuesto es" in incoming_msg.lower() or "presupuesto de" in incoming_msg.lower():
+            budget = incoming_msg.lower().split("presupuesto")[-1].strip()
+            conversation_state[phone]['client_budget'] = budget
+            logger.info(f"Client budget set to: {budget}")
+            save_client_info(phone)
+
+        # Check for preferred days and time in the message
+        if "prefiero ser contactado" in incoming_msg.lower() or "horario" in incoming_msg.lower():
+            if "prefiero ser contactado" in incoming_msg.lower():
+                days = incoming_msg.lower().split("prefiero ser contactado")[-1].strip()
+                conversation_state[phone]['preferred_days'] = days
+                logger.info(f"Preferred days set to: {days}")
+            if "horario" in incoming_msg.lower():
+                time = incoming_msg.lower().split("horario")[-1].strip()
+                conversation_state[phone]['preferred_time'] = time
+                logger.info(f"Preferred time set to: {time}")
+            save_client_info(phone)
 
         logger.debug("Checking for no-interest phrases")
         if any(phrase in incoming_msg.lower() for phrase in NO_INTEREST_PHRASES):
@@ -390,9 +460,31 @@ def whatsapp():
             conversation_state[phone]['history'].append("Giselle: Entendido, gracias por tu tiempo. Si cambias de opinión, aquí estaré.")
             save_conversation_state()
             save_conversation_history(phone, conversation_state[phone]['history'])
+            save_client_info(phone)
             return "Mensaje enviado"
 
         logger.debug("Checking for recontact request")
+        recontact_pattern = r"(contacta|contáctame|contactarme)\s*(en)?\s*(\d+)\s*(minuto|minutos|hora|horas)?"
+        recontact_match = re.search(recontact_pattern, incoming_msg.lower())
+        if recontact_match:
+            time_amount = int(recontact_match.group(3))
+            time_unit = recontact_match.group(4) if recontact_match.group(4) else "minutos"
+            if time_unit.startswith("minuto"):
+                delta = timedelta(minutes=time_amount)
+            else:  # horas
+                delta = timedelta(hours=time_amount)
+            schedule_time = datetime.now() + delta
+            conversation_state[phone]['schedule_next'] = {'time': schedule_time.isoformat()}
+            messages = [f"Perfecto, te contactaré en {time_amount} {time_unit}. ¡Que tengas un buen día!"]
+            logger.info(f"Sending scheduled contact response: {messages}")
+            send_consecutive_messages(phone, messages)
+            conversation_state[phone]['history'].append(f"Giselle: Perfecto, te contactaré en {time_amount} {time_unit}. ¡Que tengas un buen día!")
+            save_conversation_state()
+            save_conversation_history(phone, conversation_state[phone]['history'])
+            save_client_info(phone)
+            return "Mensaje enviado"
+
+        logger.debug("Checking for recontact request (next week)")
         if "próxima semana" in incoming_msg.lower() or "la próxima semana" in incoming_msg.lower():
             schedule_time = datetime.now() + timedelta(days=7)
             preferred_time = conversation_state[phone].get('preferred_time', '10:00 AM')
@@ -411,6 +503,7 @@ def whatsapp():
             conversation_state[phone]['history'].append("Giselle: Perfecto, te contactaré la próxima semana. ¡Que tengas un buen día!")
             save_conversation_state()
             save_conversation_history(phone, conversation_state[phone]['history'])
+            save_client_info(phone)
             return "Mensaje enviado"
 
         logger.debug("Preparing project information")
@@ -425,30 +518,36 @@ def whatsapp():
                         link = downloadable_links.get(project, {}).get(file, "Enlace no disponible")
                         project_info += f"- {file}\n"
                 project_info += "\n"
+            logger.debug(f"Project info prepared: {project_info}")
         except Exception as project_info_e:
             logger.error(f"Error preparing project information: {str(project_info_e)}", exc_info=True)
             project_info = "Información de proyectos no disponible."
 
         logger.debug("Building conversation history")
         conversation_history = "\n".join(conversation_state[phone]['history'])
+        logger.debug(f"Conversation history: {conversation_history}")
 
         logger.debug("Determining conversation state")
         try:
             ask_name = (
                 conversation_state[phone]['name_asked'] < 2 and
-                "Cliente: Hola" in conversation_history and
-                not any("Mi nombre es" in msg for msg in conversation_history)
+                not conversation_state[phone].get('client_name') and
+                not any("mi nombre es" in msg.lower() for msg in conversation_history)
             )
             ask_budget = (
                 conversation_state[phone]['budget_asked'] < 2 and
-                conversation_state[phone]['messages_since_budget_ask'] >= 2 and
-                not any("Mi presupuesto es" in msg or "presupuesto de" in msg.lower() for msg in conversation_history)
+                conversation_state[phone]['messages_since_budget_ask'] >= 1 and
+                not conversation_state[phone].get('client_budget') and
+                not any("mi presupuesto es" in msg.lower() or "presupuesto de" in msg.lower() for msg in conversation_history)
             )
             ask_contact_time = (
-                conversation_state[phone]['messages_without_response'] >= 2 and
+                conversation_state[phone]['contact_time_asked'] < 2 and
+                len(conversation_state[phone]['history']) >= 2 and
                 not conversation_state[phone].get('preferred_time') and
-                not conversation_state[phone].get('preferred_days')
+                not conversation_state[phone].get('preferred_days') and
+                not any("prefiero ser contactado" in msg.lower() or "horario" in msg.lower() for msg in conversation_history)
             )
+            logger.debug(f"Conversation state - ask_name: {ask_name}, ask_budget: {ask_budget}, ask_contact_time: {ask_contact_time}")
         except Exception as state_determination_e:
             logger.error(f"Error determining conversation state: {str(state_determination_e)}", exc_info=True)
             ask_name, ask_budget, ask_contact_time = False, False, False
@@ -480,14 +579,26 @@ def whatsapp():
 
             save_conversation_state()
             save_conversation_history(phone, conversation_state[phone]['history'])
+            save_client_info(phone)
             return "Mensaje enviado"
         else:
             # Check if introduction has been sent
             if not conversation_state[phone].get('introduced', False):
-                intro = bot_config.INITIAL_INTRO
+                intro = "Hola, soy Giselle de FAV Living, tu asesora de ventas. ¿A quién tengo el gusto de atender? ¿En qué puedo ayudarte hoy con respecto a nuestras propiedades en Holbox?"
                 conversation_state[phone]['introduced'] = True
+                conversation_state[phone]['name_asked'] = 1
             else:
                 intro = ""
+
+            # Ask for budget if needed
+            if ask_name:
+                conversation_state[phone]['name_asked'] += 1
+            if ask_budget:
+                intro += " A propósito, ¿cuál es tu presupuesto para la propiedad que estás buscando?"
+                conversation_state[phone]['budget_asked'] += 1
+            if ask_contact_time:
+                intro += " Por cierto, ¿en qué días y horarios prefieres que te contacte para hablar más sobre el proyecto?"
+                conversation_state[phone]['contact_time_asked'] += 1
 
             logger.debug("Generating prompt for ChatGPT")
             prompt = (
@@ -502,52 +613,46 @@ def whatsapp():
                 f"**Mensaje del cliente:** \"{incoming_msg}\"\n\n"
                 f"Responde de forma breve y profesional, enfocándote en la venta de propiedades. Improvisa de manera natural, utilizando únicamente la información de los proyectos y archivos descargables proporcionados."
             )
+            logger.debug(f"ChatGPT prompt: {prompt}")
 
             messages = []
             logger.debug("Attempting to generate response with ChatGPT")
             try:
-                for attempt in range(3):
-                    try:
-                        logger.debug(f"Attempt {attempt + 1}: Generating response with ChatGPT")
-                        response = openai_client.chat.completions.create(
-                            model="gpt-4o",
-                            messages=[
-                                {"role": "system", "content": bot_config.BOT_PERSONALITY},
-                                {"role": "user", "content": prompt}
-                            ],
-                            max_tokens=150,
-                            temperature=0.7
-                        )
-                        reply = response.choices[0].message.content.strip()
-                        logger.debug(f"Generated response: {reply}")
-                        break
-                    except Exception as openai_e:
-                        logger.error(f"Intento {attempt + 1} fallido con OpenAI API: {str(openai_e)}", exc_info=True)
-                        if attempt < 2:
-                            time.sleep(2)
-                            continue
-                        else:
-                            if "rate_limit" in str(openai_e).lower():
-                                reply = "Lo siento, estoy teniendo problemas para procesar tu mensaje en este momento. Por favor, intenta de nuevo en unos minutos."
-                            elif "authentication" in str(openai_e).lower():
-                                reply = "Parece que hay un problema con mi configuración. Por favor, contacta al soporte técnico."
-                            else:
-                                reply = "Lo siento, no entiendo bien tu pregunta debido a un error interno. ¿Puedes repetirla de otra forma?"
-            except Exception as e:
-                logger.error(f"Error inesperado al generar respuesta con ChatGPT: {str(e)}", exc_info=True)
-                reply = "Lo siento, ocurrió un error al procesar tu mensaje. ¿En qué más puedo ayudarte?"
+                logger.debug("Generating response with ChatGPT")
+                response = openai_client.chat.completions.create(
+                    model="gpt-4o",
+                    messages=[
+                        {"role": "system", "content": bot_config.BOT_PERSONALITY},
+                        {"role": "user", "content": prompt}
+                    ],
+                    max_tokens=150,
+                    temperature=0.7
+                )
+                reply = response.choices[0].message.content.strip()
+                logger.debug(f"Generated response: {reply}")
+            except Exception as openai_e:
+                logger.error(f"Fallo con OpenAI API: {str(openai_e)}", exc_info=True)
+                if "rate_limit" in str(openai_e).lower() or "insufficient_quota" in str(openai_e).lower():
+                    reply = "Lo siento, estoy teniendo problemas para procesar tu mensaje debido a un límite en mi sistema. Por favor, intenta de nuevo más tarde."
+                elif "authentication" in str(openai_e).lower():
+                    reply = "Parece que hay un problema con mi configuración. Por favor, contacta al soporte técnico."
+                else:
+                    reply = "Lo siento, no entiendo bien tu pregunta debido a un error interno. ¿Puedes repetirla de otra forma?"
+
+            logger.debug(f"ChatGPT reply: {reply}")
 
             current_message = ""
             sentences = reply.split('. ')
             for i, sentence in enumerate(sentences):
                 if not sentence:
                     continue
-                sentence = sentence.strip() + ('.' if i < len(sentences) - 1 else '')
-                if len(current_message.split('\n')) < 2:
-                    current_message += (sentence + ' ') if current_message else sentence
-                else:
-                    messages.append(current_message.strip())
-                    current_message = sentence
+                sentence = sentence.strip()
+                if sentence:
+                    if len(current_message.split('\n')) < 2:
+                        current_message += (sentence + '. ') if current_message else sentence + '. '
+                    else:
+                        messages.append(current_message.strip())
+                        current_message = sentence + '. '
             if current_message:
                 messages.append(current_message.strip())
 
@@ -558,28 +663,38 @@ def whatsapp():
 
             # Check for file requests
             requested_file = None
-            for file in downloadable_files.get(project, []):
-                if file.lower() in incoming_msg.lower():
-                    requested_file = file
+            project = None
+            for proj, files in downloadable_files.items():
+                for file in files:
+                    if file.lower() in incoming_msg.lower():
+                        requested_file = file
+                        project = proj
+                        break
+                if requested_file:
                     break
 
-            if requested_file:
+            if requested_file and project:
                 try:
                     file_path = os.path.join(GCS_BASE_PATH, project, "DESCARGABLES", requested_file)
                     logger.debug(f"Uploading file to GCS: {file_path}")
-                    public_url = upload_file_to_gcs(GCS_BUCKET_NAME, file_path, f"public/{project}/{requested_file}")
-                    logger.debug(f"File uploaded to GCS, public URL: {public_url}")
-                    message = client.messages.create(
-                        from_=WHATSAPP_SENDER_NUMBER,
-                        body=f"Aquí tienes el archivo \"{requested_file}\".",
-                        media_url=[public_url],
-                        to=phone
-                    )
-                    logger.info(f"Archivo enviado a través de Twilio: SID {message.sid}, Estado: {message.status}")
-                    conversation_state[phone]['history'].append(f"Giselle: Aquí tienes el archivo \"{requested_file}\".")
-                    save_conversation_state()
-                    save_conversation_history(phone, conversation_state[phone]['history'])
-                    return "Mensaje enviado"
+                    if os.path.exists(file_path):
+                        public_url = upload_file_to_gcs(GCS_BUCKET_NAME, file_path, f"public/{project}/{requested_file}")
+                        logger.debug(f"File uploaded to GCS, public URL: {public_url}")
+                        message = client.messages.create(
+                            from_=WHATSAPP_SENDER_NUMBER,
+                            body=f"Aquí tienes el archivo \"{requested_file}\".",
+                            media_url=[public_url],
+                            to=phone
+                        )
+                        logger.info(f"Archivo enviado a través de Twilio: SID {message.sid}, Estado: {message.status}")
+                        conversation_state[phone]['history'].append(f"Giselle: Aquí tienes el archivo \"{requested_file}\".")
+                        save_conversation_state()
+                        save_conversation_history(phone, conversation_state[phone]['history'])
+                        save_client_info(phone)
+                        return "Mensaje enviado"
+                    else:
+                        logger.error(f"File {file_path} does not exist")
+                        messages.append(f"Lo siento, no encontré el archivo \"{requested_file}\". ¿Te gustaría ver otro archivo o más detalles del proyecto?")
                 except Exception as file_e:
                     logger.error(f"Error al enviar archivo: {str(file_e)}", exc_info=True)
                     messages.append("Lo siento, no pude enviar el archivo solicitado. ¿Te gustaría ver otro archivo o más detalles del proyecto?")
@@ -592,6 +707,7 @@ def whatsapp():
 
             save_conversation_state()
             save_conversation_history(phone, conversation_state[phone]['history'])
+            save_client_info(phone)
 
             logger.debug("Returning success response")
             return "Mensaje enviado"
@@ -616,6 +732,7 @@ def whatsapp():
             conversation_state[phone]['history'].append("Giselle: Lo siento, ocurrió un error. ¿En qué más puedo ayudarte?")
             save_conversation_state()
             save_conversation_history(phone, conversation_state[phone]['history'])
+            save_client_info(phone)
         except Exception as twilio_e:
             logger.error(f"Error sending fallback message: {str(twilio_e)}")
         return "Error interno del servidor", 500
@@ -642,7 +759,7 @@ if __name__ == '__main__':
     download_projects_from_storage()
     downloadable_files = load_projects_from_folder()
     port = int(os.getenv("PORT", DEFAULT_PORT))
-    service_url = os.getenv("SERVICE_URL", f"https://giselle-bot-250207106980.us-central1.run.app")  # Fallback to expected URL
+    service_url = os.getenv("SERVICE_URL", f"https://giselle-bot-250207106980.us-central1.run.app")
     logger.info(f"Puerto del servidor: {port}")
     logger.info(f"URL del servicio: {service_url}")
     logger.info(f"Configura el webhook en Twilio con: {service_url}/whatsapp")
