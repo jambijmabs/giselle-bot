@@ -198,7 +198,7 @@ def load_projects_from_folder(base_path='PROYECTOS'):
 def send_consecutive_messages(phone, messages):
     for msg in messages:
         message = client.messages.create(
-            from_='whatsapp:+15557684099',
+            from_='whatsapp:+15557571247',
             body=msg,
             to=phone
         )
@@ -461,7 +461,7 @@ def whatsapp():
         # Send a fallback message to the user
         try:
             message = client.messages.create(
-                from_='whatsapp:+15557684099',
+                from_='whatsapp:+15557571247',
                 body="Lo siento, ocurrió un error. ¿En qué más puedo ayudarte?",
                 to=phone
             )
