@@ -271,7 +271,11 @@ def schedule_recontact():
 def whatsapp():
     logger.debug("Entered /whatsapp route")
     try:
+        # Log the entire request data for debugging
+        logger.debug(f"Request headers: {dict(request.headers)}")
         logger.debug(f"Request form data: {request.form}")
+        logger.debug(f"Request values: {dict(request.values)}")
+
         incoming_msg = request.values.get('Body', '').strip()
         phone = request.values.get('From', '')
 
@@ -279,9 +283,28 @@ def whatsapp():
             logger.error("No se encontraron 'Body' o 'From' en la solicitud")
             return "Error: Solicitud incompleta", 400
 
-        # Ensure the phone number is in E.164 format (starts with "whatsapp:+")
+        # Log the raw phone number before any processing
+        logger.debug(f"Raw phone number (before strip): {repr(phone)}")
+
+        # Strip whitespace and handle potential encoding issues
+        phone = phone.strip()
+
+        # Log the phone number after stripping
+        logger.debug(f"Phone number after strip: {repr(phone)}")
+
+        # Normalize the phone number
         if not phone.startswith('whatsapp:+'):
-            logger.error(f"Invalid phone number format: {phone}")
+            if phone.startswith('whatsapp:'):
+                phone = f"whatsapp:+{phone[len('whatsapp:'):]}"
+            else:
+                phone = f"whatsapp:+{phone}"
+
+        # Log the normalized phone number
+        logger.debug(f"Normalized phone number: {repr(phone)}")
+
+        # Validate the phone number format
+        if not phone.startswith('whatsapp:+'):
+            logger.error(f"Invalid phone number format after normalization: {repr(phone)}")
             return "Error: Invalid phone number format", 400
 
         logger.info(f"Mensaje recibido de {phone}: {incoming_msg}")
@@ -519,9 +542,10 @@ if __name__ == '__main__':
     download_projects_from_storage()
     downloadable_files = load_projects_from_folder()
     port = int(os.getenv("PORT", DEFAULT_PORT))
+    service_url = os.getenv("SERVICE_URL", f"https://giselle-bot-250207106980.us-central1.run.app")  # Fallback to expected URL
     logger.info(f"Puerto del servidor: {port}")
-    logger.info("Nota: Cloud Run asignará una URL pública al deploy (por ejemplo, https://giselle-bot-abc123-uc.a.run.app)")
-    logger.info("Configura el webhook en Twilio con la URL pública del deployment + /whatsapp")
+    logger.info(f"URL del servicio: {service_url}")
+    logger.info(f"Configura el webhook en Twilio con: {service_url}/whatsapp")
     logger.info("Iniciando servidor Flask...")
     app.run(host='0.0.0.0', port=port, debug=True)
     logger.info(f"Servidor Flask iniciado en el puerto {port}.")
