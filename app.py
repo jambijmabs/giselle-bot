@@ -7,10 +7,11 @@ from twilio.rest import Client
 from google.cloud import storage
 from openai import OpenAI
 from datetime import datetime, timedelta
+import bot_config
 
 # Configuration Section
 # Define all variables that are prone to change here
-WHATSAPP_SENDER_NUMBER = "whatsapp:+18188732305"  # WhatsApp sender number
+WHATSAPP_SENDER_NUMBER = "whatsapp:+18188732305"  # Updated WhatsApp sender number
 TWILIO_ACCOUNT_SID = os.getenv('TWILIO_ACCOUNT_SID')
 TWILIO_AUTH_TOKEN = os.getenv('TWILIO_AUTH_TOKEN')
 OPENAI_API_KEY = os.getenv('OPENAI_API_KEY')
@@ -146,12 +147,17 @@ def extract_text_from_txt(txt_path):
         return ""
 
 def upload_file_to_gcs(bucket_name, source_file_path, destination_blob_name):
-    """Upload a file to Google Cloud Storage and return a public URL."""
+    """Upload a file to Google Cloud Storage and return a pre-signed URL."""
     bucket = storage_client.bucket(bucket_name)
     blob = bucket.blob(destination_blob_name)
     blob.upload_from_filename(source_file_path)
-    blob.make_public()  # Make the file publicly accessible
-    return blob.public_url
+    # Generate a pre-signed URL valid for 1 hour
+    url = blob.generate_signed_url(
+        expiration=timedelta(hours=1),
+        method="GET",
+        version="v4"
+    )
+    return url
 
 def load_projects_from_folder(base_path=GCS_BASE_PATH):
     """Load project data from folder."""
@@ -319,10 +325,36 @@ def whatsapp():
         logger.info(f"Mensaje recibido de {phone}: {incoming_msg}")
 
         logger.debug("Loading conversation history")
-        history = load_conversation_history(phone)
+        try:
+            history = load_conversation_history(phone)
+        except Exception as history_e:
+            logger.error(f"Error loading conversation history: {str(history_e)}", exc_info=True)
+            history = []
 
         logger.debug("Initializing conversation state")
-        if phone not in conversation_state:
+        try:
+            if phone not in conversation_state:
+                conversation_state[phone] = {
+                    'history': history,
+                    'name_asked': 0,
+                    'budget_asked': 0,
+                    'messages_since_budget_ask': 0,
+                    'messages_without_response': 0,
+                    'preferred_time': None,
+                    'preferred_days': None,
+                    'last_contact': datetime.now().isoformat(),
+                    'recontact_attempts': 0,
+                    'no_interest': False,
+                    'schedule_next': None,
+                    'last_incoming_time': datetime.now().isoformat(),
+                    'introduced': False
+                }
+            else:
+                conversation_state[phone]['history'] = history
+                conversation_state[phone]['messages_without_response'] = 0
+                conversation_state[phone]['last_incoming_time'] = datetime.now().isoformat()
+        except Exception as state_e:
+            logger.error(f"Error initializing conversation state: {str(state_e)}", exc_info=True)
             conversation_state[phone] = {
                 'history': history,
                 'name_asked': 0,
@@ -336,16 +368,15 @@ def whatsapp():
                 'no_interest': False,
                 'schedule_next': None,
                 'last_incoming_time': datetime.now().isoformat(),
-                'introduced': False  # Track if introduction has been sent
+                'introduced': False
             }
-        else:
-            conversation_state[phone]['history'] = history
-            conversation_state[phone]['messages_without_response'] = 0
-            conversation_state[phone]['last_incoming_time'] = datetime.now().isoformat()
 
         logger.debug("Updating conversation history")
-        conversation_state[phone]['history'].append(f"Cliente: {incoming_msg}")
-        conversation_state[phone]['history'] = conversation_state[phone]['history'][-5:]
+        try:
+            conversation_state[phone]['history'].append(f"Cliente: {incoming_msg}")
+            conversation_state[phone]['history'] = conversation_state[phone]['history'][-5:]
+        except Exception as history_update_e:
+            logger.error(f"Error updating conversation history: {str(history_update_e)}", exc_info=True)
 
         conversation_state[phone]['last_contact'] = datetime.now().isoformat()
         conversation_state[phone]['messages_since_budget_ask'] += 1
@@ -384,45 +415,43 @@ def whatsapp():
 
         logger.debug("Preparing project information")
         project_info = ""
-        for project, data in projects_data.items():
-            project_info += f"Proyecto: {project}\n"
-            project_info += f"Información: {data}\n"
-            if project in downloadable_files and downloadable_files[project]:
-                project_info += "Archivos descargables:\n"
-                for file in downloadable_files[project]:
-                    link = downloadable_links.get(project, {}).get(file, "Enlace no disponible")
-                    project_info += f"- {file}: {link}\n"
-                    # Upload the file to GCS and get a public URL
-                    file_path = os.path.join(GCS_BASE_PATH, project, "DESCARGABLES", file)
-                    public_url = upload_file_to_gcs(GCS_BUCKET_NAME, file_path, f"public/{project}/{file}")
-                    # Send the file via WhatsApp
-                    message = client.messages.create(
-                        from_=WHATSAPP_SENDER_NUMBER,
-                        body=f"Aquí tienes el archivo \"{file}\" que muestra la entrada del proyecto.",
-                        media_url=[public_url],
-                        to=phone
-                    )
-                    logger.info(f"Archivo enviado a través de Twilio: SID {message.sid}, Estado: {message.status}")
-            project_info += "\n"
+        try:
+            for project, data in projects_data.items():
+                project_info += f"Proyecto: {project}\n"
+                project_info += f"Información: {data}\n"
+                if project in downloadable_files and downloadable_files[project]:
+                    project_info += "Archivos descargables:\n"
+                    for file in downloadable_files[project]:
+                        link = downloadable_links.get(project, {}).get(file, "Enlace no disponible")
+                        project_info += f"- {file}\n"
+                project_info += "\n"
+        except Exception as project_info_e:
+            logger.error(f"Error preparing project information: {str(project_info_e)}", exc_info=True)
+            project_info = "Información de proyectos no disponible."
 
+        logger.debug("Building conversation history")
         conversation_history = "\n".join(conversation_state[phone]['history'])
 
         logger.debug("Determining conversation state")
-        ask_name = (
-            conversation_state[phone]['name_asked'] < 2 and
-            "Cliente: Hola" in conversation_history and
-            not any("Mi nombre es" in msg for msg in conversation_history)
-        )
-        ask_budget = (
-            conversation_state[phone]['budget_asked'] < 2 and
-            conversation_state[phone]['messages_since_budget_ask'] >= 2 and
-            not any("Mi presupuesto es" in msg or "presupuesto de" in msg.lower() for msg in conversation_history)
-        )
-        ask_contact_time = (
-            conversation_state[phone]['messages_without_response'] >= 2 and
-            not conversation_state[phone].get('preferred_time') and
-            not conversation_state[phone].get('preferred_days')
-        )
+        try:
+            ask_name = (
+                conversation_state[phone]['name_asked'] < 2 and
+                "Cliente: Hola" in conversation_history and
+                not any("Mi nombre es" in msg for msg in conversation_history)
+            )
+            ask_budget = (
+                conversation_state[phone]['budget_asked'] < 2 and
+                conversation_state[phone]['messages_since_budget_ask'] >= 2 and
+                not any("Mi presupuesto es" in msg or "presupuesto de" in msg.lower() for msg in conversation_history)
+            )
+            ask_contact_time = (
+                conversation_state[phone]['messages_without_response'] >= 2 and
+                not conversation_state[phone].get('preferred_time') and
+                not conversation_state[phone].get('preferred_days')
+            )
+        except Exception as state_determination_e:
+            logger.error(f"Error determining conversation state: {str(state_determination_e)}", exc_info=True)
+            ask_name, ask_budget, ask_contact_time = False, False, False
 
         logger.debug("Checking 24-hour session window")
         last_incoming_time = datetime.fromisoformat(conversation_state[phone]['last_incoming_time'])
@@ -445,7 +474,7 @@ def whatsapp():
             if updated_message.status == "failed":
                 logger.error(f"Error al enviar mensaje de plantilla: {updated_message.error_code} - {updated_message.error_message}")
 
-            template_response = "Hola Cliente, soy Giselle de FAV Living. ¿Te gustaría saber más sobre nuestros proyectos inmobiliarios?"
+            template_response = bot_config.TEMPLATE_RESPONSE
             conversation_state[phone]['history'].append(f"Giselle: {template_response}")
             conversation_state[phone]['history'] = conversation_state[phone]['history'][-5:]
 
@@ -455,33 +484,17 @@ def whatsapp():
         else:
             # Check if introduction has been sent
             if not conversation_state[phone].get('introduced', False):
-                intro = "Hola, soy Giselle de FAV Living, tu asesora de ventas. ¿Cómo puedo ayudarte hoy con respecto a nuestras propiedades en Holbox?"
+                intro = bot_config.INITIAL_INTRO
                 conversation_state[phone]['introduced'] = True
             else:
                 intro = ""
 
             logger.debug("Generating prompt for ChatGPT")
             prompt = (
-                f"Eres Giselle, una asesora de ventas de FAV Living, una empresa inmobiliaria. "
-                f"Tu objetivo es vender propiedades inmobiliarias de manera natural e improvisada, como lo haría una vendedora real. "
-                f"No uses respuestas predefinidas ni intentes estructurar la conversación de manera rígida. "
-                f"Responde únicamente basándote en la información de los proyectos que tienes disponible, sin inventar información adicional. "
-                f"Actúa de forma fluida y profesional, enfocándote en la venta de propiedades. "
-                f"Si el cliente hace una pregunta y no tienes la información exacta para responder, di algo como 'No sé exactamente, pero déjame investigarlo' "
-                f"y continúa la conversación de manera natural. "
-                f"No uses emoticones ni compartas información personal sobre ti más allá de tu rol en FAV Living.\n\n"
+                f"{bot_config.BOT_PERSONALITY}\n\n"
                 f"{intro}\n\n"
                 f"**Instrucciones para las respuestas:**\n"
-                f"- Responde de manera breve y profesional, como lo haría un humano en WhatsApp (1-2 frases por mensaje).\n"
-                f"- Si la respuesta tiene más de 2 frases, divídela en mensajes consecutivos (separa el texto en varias partes, cada una de 1-2 frases).\n"
-                f"- No uses viñetas ni formatos estructurados; escribe de forma fluida como un humano.\n"
-                f"- Si el cliente solicita información adicional o documentos (como presentaciones, precios, renders), incluye los nombres de los "
-                f"archivos descargables correspondientes si están disponibles, sin inventar enlaces.\n"
-                f"- Pregunta por el nombre del cliente de manera natural, pero no más de 1-2 veces en toda la conversación si no responde.\n"
-                f"- Pregunta por el presupuesto del cliente de manera natural, pero no insistas; si no responde, vuelve a preguntar solo después de 2-3 mensajes "
-                f"si es oportuno y relevante para la conversación.\n"
-                f"- Si el cliente no ha respondido después de 2 mensajes, pregunta por su horario y días preferidos de contacto de manera natural, "
-                f"para intentar recontactarlo más tarde.\n\n"
+                f"{bot_config.RESPONSE_INSTRUCTIONS}\n\n"
                 f"**Información de los proyectos disponibles:**\n"
                 f"{project_info}\n\n"
                 f"**Historial de conversación:**\n"
@@ -490,24 +503,40 @@ def whatsapp():
                 f"Responde de forma breve y profesional, enfocándote en la venta de propiedades. Improvisa de manera natural, utilizando únicamente la información de los proyectos y archivos descargables proporcionados."
             )
 
-            try:
-                logger.debug("Generating response with ChatGPT")
-                response = openai_client.chat.completions.create(
-                    model="gpt-4o",
-                    messages=[
-                        {"role": "system", "content": "Eres Giselle, una asesora de ventas de FAV Living..."},
-                        {"role": "user", "content": prompt}
-                    ],
-                    max_tokens=150,
-                    temperature=0.7
-                )
-                reply = response.choices[0].message.content.strip()
-                logger.debug(f"Generated response: {reply}")
-            except Exception as openai_e:
-                logger.error(f"Error con OpenAI API: {str(openai_e)}", exc_info=True)
-                reply = "Lo siento, no entiendo bien tu pregunta. ¿Puedes repetirla de otra forma?"
-
             messages = []
+            logger.debug("Attempting to generate response with ChatGPT")
+            try:
+                for attempt in range(3):
+                    try:
+                        logger.debug(f"Attempt {attempt + 1}: Generating response with ChatGPT")
+                        response = openai_client.chat.completions.create(
+                            model="gpt-4o",
+                            messages=[
+                                {"role": "system", "content": bot_config.BOT_PERSONALITY},
+                                {"role": "user", "content": prompt}
+                            ],
+                            max_tokens=150,
+                            temperature=0.7
+                        )
+                        reply = response.choices[0].message.content.strip()
+                        logger.debug(f"Generated response: {reply}")
+                        break
+                    except Exception as openai_e:
+                        logger.error(f"Intento {attempt + 1} fallido con OpenAI API: {str(openai_e)}", exc_info=True)
+                        if attempt < 2:
+                            time.sleep(2)
+                            continue
+                        else:
+                            if "rate_limit" in str(openai_e).lower():
+                                reply = "Lo siento, estoy teniendo problemas para procesar tu mensaje en este momento. Por favor, intenta de nuevo en unos minutos."
+                            elif "authentication" in str(openai_e).lower():
+                                reply = "Parece que hay un problema con mi configuración. Por favor, contacta al soporte técnico."
+                            else:
+                                reply = "Lo siento, no entiendo bien tu pregunta debido a un error interno. ¿Puedes repetirla de otra forma?"
+            except Exception as e:
+                logger.error(f"Error inesperado al generar respuesta con ChatGPT: {str(e)}", exc_info=True)
+                reply = "Lo siento, ocurrió un error al procesar tu mensaje. ¿En qué más puedo ayudarte?"
+
             current_message = ""
             sentences = reply.split('. ')
             for i, sentence in enumerate(sentences):
@@ -527,6 +556,34 @@ def whatsapp():
             if not messages:
                 messages = ["No sé exactamente, pero déjame investigarlo."]
 
+            # Check for file requests
+            requested_file = None
+            for file in downloadable_files.get(project, []):
+                if file.lower() in incoming_msg.lower():
+                    requested_file = file
+                    break
+
+            if requested_file:
+                try:
+                    file_path = os.path.join(GCS_BASE_PATH, project, "DESCARGABLES", requested_file)
+                    logger.debug(f"Uploading file to GCS: {file_path}")
+                    public_url = upload_file_to_gcs(GCS_BUCKET_NAME, file_path, f"public/{project}/{requested_file}")
+                    logger.debug(f"File uploaded to GCS, public URL: {public_url}")
+                    message = client.messages.create(
+                        from_=WHATSAPP_SENDER_NUMBER,
+                        body=f"Aquí tienes el archivo \"{requested_file}\".",
+                        media_url=[public_url],
+                        to=phone
+                    )
+                    logger.info(f"Archivo enviado a través de Twilio: SID {message.sid}, Estado: {message.status}")
+                    conversation_state[phone]['history'].append(f"Giselle: Aquí tienes el archivo \"{requested_file}\".")
+                    save_conversation_state()
+                    save_conversation_history(phone, conversation_state[phone]['history'])
+                    return "Mensaje enviado"
+                except Exception as file_e:
+                    logger.error(f"Error al enviar archivo: {str(file_e)}", exc_info=True)
+                    messages.append("Lo siento, no pude enviar el archivo solicitado. ¿Te gustaría ver otro archivo o más detalles del proyecto?")
+
             send_consecutive_messages(phone, messages)
 
             for msg in messages:
@@ -545,9 +602,8 @@ def whatsapp():
             phone = phone.strip()
             if not phone.startswith('whatsapp:+'):
                 phone = phone.replace('whatsapp:', '').strip()
-                phone = f"whatsapp:+{phone.replace(' ', '')}"  # Remove any spaces
+                phone = f"whatsapp:+{phone.replace(' ', '')}"
             logger.debug(f"Phone number in exception handler: {repr(phone)}")
-            # Validate the phone number format
             if not phone.startswith('whatsapp:+'):
                 logger.error(f"Invalid phone number format in exception handler: {repr(phone)}")
                 return "Error: Invalid phone number format in exception handler", 400
