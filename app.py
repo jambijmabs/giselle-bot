@@ -517,7 +517,7 @@ def whatsapp():
             try:
                 logger.debug("Generating response with ChatGPT")
                 response = openai_client.chat.completions.create(
-                    model="gpt-4o",
+                    model="gpt-4o-mini",
                     messages=[
                         {"role": "system", "content": bot_config.BOT_PERSONALITY},
                         {"role": "user", "content": prompt}
