@@ -447,7 +447,7 @@ def whatsapp():
                 f"No uses emoticones ni compartas información personal sobre ti más allá de tu rol en FAV Living.\n\n"
                 f"**Instrucciones para las respuestas:**\n"
                 f"- Responde de manera breve y profesional, como lo haría un humano en WhatsApp (1-2 frases por mensaje).\n"
-                f"- Si la respuesta tiene más de 2 frases, divídela en mensajes consecutivos (separa el texto en varias partes, cada una de 1-2 frases).\n"
+                f"- Si la respuesta tiene más de 2 frases, divídila en mensajes consecutivos (separa el texto en varias partes, cada una de 1-2 frases).\n"
                 f"- No uses viñetas ni formatos estructurados; escribe de forma fluida como un humano.\n"
                 f"- Si es la primera interacción, preséntate brevemente como asesora de ventas de FAV Living.\n"
                 f"- Si el cliente solicita información adicional o documentos (como presentaciones, precios, renders), incluye los nombres de los "
@@ -522,8 +522,12 @@ def whatsapp():
             phone = phone.strip()
             if not phone.startswith('whatsapp:+'):
                 phone = phone.replace('whatsapp:', '').strip()
-                phone = f"whatsapp:+{phone}"
+                phone = f"whatsapp:+{phone.replace(' ', '')}"  # Remove any spaces
             logger.debug(f"Phone number in exception handler: {repr(phone)}")
+            # Validate the phone number format
+            if not phone.startswith('whatsapp:+'):
+                logger.error(f"Invalid phone number format in exception handler: {repr(phone)}")
+                return "Error: Invalid phone number format in exception handler", 400
             message = client.messages.create(
                 from_=WHATSAPP_SENDER_NUMBER,
                 body="Lo siento, ocurrió un error. ¿En qué más puedo ayudarte?",
