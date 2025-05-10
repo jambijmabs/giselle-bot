@@ -8,25 +8,7 @@ from google.cloud import storage
 from openai import OpenAI
 from datetime import datetime, timedelta
 
-# Configuration Section
-# Define all variables that are prone to change here
-WHATSAPP_SENDER_NUMBER = "whatsapp:+15557571247"  # WhatsApp sender number
-TWILIO_ACCOUNT_SID = os.getenv('TWILIO_ACCOUNT_SID')
-TWILIO_AUTH_TOKEN = os.getenv('TWILIO_AUTH_TOKEN')
-GROK_API_KEY = os.getenv('GROK_API_KEY')
-GROK_API_BASE_URL = "https://api.x.ai/v1"
-GCS_BUCKET_NAME = "giselle-projects"
-GCS_BASE_PATH = "PROYECTOS"
-STATE_FILE = "conversation_state.json"
-DEFAULT_PORT = 8080
-NO_INTEREST_PHRASES = [
-    "no me interesa", "no estoy interesado", "no quiero comprar",
-    "no gracias", "no por el momento", "no estoy buscando"
-]
-WHATSAPP_TEMPLATE_SID = "HX1234567890abcdef1234567890abcdef"  # Replace with your template SID
-WHATSAPP_TEMPLATE_VARIABLES = {"1": "Cliente"}
-
-# Configure logging to output to stdout/stderr (Cloud Run captures these)
+# Configure logging
 logging.basicConfig(
     level=logging.DEBUG,
     format='%(asctime)s - %(levelname)s - %(message)s',
@@ -43,18 +25,12 @@ app = Flask(__name__)
 logger = logging.getLogger(__name__)
 
 # Initialize Twilio client
-if not TWILIO_ACCOUNT_SID or not TWILIO_AUTH_TOKEN:
-    logger.error("TWILIO_ACCOUNT_SID or TWILIO_AUTH_TOKEN not set in environment variables")
-    raise ValueError("TWILIO_ACCOUNT_SID or TWILIO_AUTH_TOKEN not set")
-client = Client(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
+client = Client(os.getenv('TWILIO_ACCOUNT_SID'), os.getenv('TWILIO_AUTH_TOKEN'))
 
 # Initialize Grok API client
-if not GROK_API_KEY:
-    logger.error("GROK_API_KEY not set in environment variables")
-    raise ValueError("GROK_API_KEY not set")
 grok_client = OpenAI(
-    api_key=GROK_API_KEY,
-    base_url=GROK_API_BASE_URL
+    api_key=os.getenv('GROK_API_KEY'),
+    base_url='https://api.x.ai/v1'
 )
 
 # Global dictionaries for project data and conversation state
@@ -62,17 +38,11 @@ projects_data = {}
 downloadable_links = {}
 conversation_state = {}
 
-# Helper Functions
-def get_conversation_history_filename(phone):
-    """Generate the filename for conversation history based on phone number."""
-    return f"{phone.replace('+', '').replace(':', '_')}_conversation.txt"
-
 def load_conversation_state():
-    """Load conversation state from file."""
     global conversation_state
     try:
-        if os.path.exists(STATE_FILE):
-            with open(STATE_FILE, 'r') as f:
+        if os.path.exists('conversation_state.json'):
+            with open('conversation_state.json', 'r') as f:
                 conversation_state = json.load(f)
             logger.info("Conversation state loaded from file")
         else:
@@ -83,17 +53,15 @@ def load_conversation_state():
         conversation_state = {}
 
 def save_conversation_state():
-    """Save conversation state to file."""
     try:
-        with open(STATE_FILE, 'w') as f:
+        with open('conversation_state.json', 'w') as f:
             json.dump(conversation_state, f)
         logger.info("Conversation state saved to file")
     except Exception as e:
         logger.error(f"Error saving conversation state: {str(e)}")
 
 def load_conversation_history(phone):
-    """Load conversation history from file."""
-    filename = get_conversation_history_filename(phone)
+    filename = f"{phone.replace('+', '').replace(':', '_')}_conversation.txt"
     try:
         if os.path.exists(filename):
             with open(filename, 'r', encoding='utf-8') as f:
@@ -106,8 +74,7 @@ def load_conversation_history(phone):
         return []
 
 def save_conversation_history(phone, history):
-    """Save conversation history to file."""
-    filename = get_conversation_history_filename(phone)
+    filename = f"{phone.replace('+', '').replace(':', '_')}_conversation.txt"
     try:
         with open(filename, 'w', encoding='utf-8') as f:
             f.write('\n'.join(history))
@@ -115,8 +82,7 @@ def save_conversation_history(phone, history):
     except Exception as e:
         logger.error(f"Error saving conversation history for {phone}: {str(e)}")
 
-def download_projects_from_storage(bucket_name=GCS_BUCKET_NAME, base_path=GCS_BASE_PATH):
-    """Download project files from Google Cloud Storage."""
+def download_projects_from_storage(bucket_name="giselle-projects", base_path="PROYECTOS"):
     try:
         if not os.path.exists(base_path):
             os.makedirs(base_path)
@@ -137,7 +103,6 @@ def download_projects_from_storage(bucket_name=GCS_BUCKET_NAME, base_path=GCS_BA
         raise
 
 def extract_text_from_txt(txt_path):
-    """Extract text from .txt files."""
     try:
         with open(txt_path, 'r', encoding='utf-8') as file:
             text = file.read()
@@ -147,8 +112,7 @@ def extract_text_from_txt(txt_path):
         logger.error(f"Error al leer archivo de texto {txt_path}: {str(e)}", exc_info=True)
         return ""
 
-def load_projects_from_folder(base_path=GCS_BASE_PATH):
-    """Load project data from folder."""
+def load_projects_from_folder(base_path="PROYECTOS"):
     downloadable_files = {}
 
     if not os.path.exists(base_path):
@@ -208,10 +172,9 @@ def load_projects_from_folder(base_path=GCS_BASE_PATH):
     return downloadable_files
 
 def send_consecutive_messages(phone, messages):
-    """Send consecutive messages via Twilio."""
     for msg in messages:
         message = client.messages.create(
-            from_=WHATSAPP_SENDER_NUMBER,
+            from_='whatsapp:+15557571247',
             body=msg,
             to=phone
         )
@@ -222,7 +185,6 @@ def send_consecutive_messages(phone, messages):
             logger.error(f"Error al enviar mensaje: {updated_message.error_code} - {updated_message.error_message}")
 
 def schedule_recontact():
-    """Schedule recontact for clients."""
     current_time = datetime.now()
     for phone, state in conversation_state.items():
         if state.get('no_interest', False):
@@ -266,46 +228,15 @@ def schedule_recontact():
                 save_conversation_state()
                 save_conversation_history(phone, conversation_state[phone]['history'])
 
-# Routes
 @app.route('/whatsapp', methods=['POST'])
 def whatsapp():
-    logger.debug("Entered /whatsapp route")
     try:
-        # Log the entire request data for debugging
-        logger.debug(f"Request headers: {dict(request.headers)}")
-        logger.debug(f"Request form data: {request.form}")
-        logger.debug(f"Request values: {dict(request.values)}")
-
         incoming_msg = request.values.get('Body', '').strip()
         phone = request.values.get('From', '')
 
         if not incoming_msg or not phone:
             logger.error("No se encontraron 'Body' o 'From' en la solicitud")
             return "Error: Solicitud incompleta", 400
-
-        # Log the raw phone number before any processing
-        logger.debug(f"Raw phone number (before strip): {repr(phone)}")
-
-        # Strip whitespace and handle potential encoding issues
-        phone = phone.strip()
-
-        # Log the phone number after stripping
-        logger.debug(f"Phone number after strip: {repr(phone)}")
-
-        # Normalize the phone number
-        if not phone.startswith('whatsapp:+'):
-            if phone.startswith('whatsapp:'):
-                phone = f"whatsapp:+{phone[len('whatsapp:'):]}"
-            else:
-                phone = f"whatsapp:+{phone}"
-
-        # Log the normalized phone number
-        logger.debug(f"Normalized phone number: {repr(phone)}")
-
-        # Validate the phone number format
-        if not phone.startswith('whatsapp:+'):
-            logger.error(f"Invalid phone number format after normalization: {repr(phone)}")
-            return "Error: Invalid phone number format", 400
 
         logger.info(f"Mensaje recibido de {phone}: {incoming_msg}")
 
@@ -337,10 +268,13 @@ def whatsapp():
         conversation_state[phone]['last_contact'] = datetime.now().isoformat()
         conversation_state[phone]['messages_since_budget_ask'] += 1
 
-        if any(phrase in incoming_msg.lower() for phrase in NO_INTEREST_PHRASES):
+        no_interest_phrases = [
+            "no me interesa", "no estoy interesado", "no quiero comprar",
+            "no gracias", "no por el momento", "no estoy buscando"
+        ]
+        if any(phrase in incoming_msg.lower() for phrase in no_interest_phrases):
             conversation_state[phone]['no_interest'] = True
             messages = ["Entendido, gracias por tu tiempo. Si cambias de opinión, aquí estaré."]
-            logger.info(f"Sending no-interest response: {messages}")
             send_consecutive_messages(phone, messages)
             conversation_state[phone]['history'].append("Giselle: Entendido, gracias por tu tiempo. Si cambias de opinión, aquí estaré.")
             save_conversation_state()
@@ -360,7 +294,6 @@ def whatsapp():
                 schedule_time = schedule_time.replace(hour=schedule_time.hour + 12)
             conversation_state[phone]['schedule_next'] = {'time': schedule_time.isoformat()}
             messages = ["Perfecto, te contactaré la próxima semana. ¡Que tengas un buen día!"]
-            logger.info(f"Sending scheduled contact response: {messages}")
             send_consecutive_messages(phone, messages)
             conversation_state[phone]['history'].append("Giselle: Perfecto, te contactaré la próxima semana. ¡Que tengas un buen día!")
             save_conversation_state()
@@ -400,14 +333,12 @@ def whatsapp():
         time_since_last_incoming = datetime.now() - last_incoming_time
         use_template = time_since_last_incoming > timedelta(hours=24)
 
-        logger.debug(f"Time since last incoming message: {time_since_last_incoming}, Use template: {use_template}")
-
         if use_template:
             message = client.messages.create(
-                from_=WHATSAPP_SENDER_NUMBER,
+                from_='whatsapp:+15557571247',
                 to=phone,
-                content_sid=WHATSAPP_TEMPLATE_SID,
-                content_variables=json.dumps(WHATSAPP_TEMPLATE_VARIABLES)
+                content_sid='HX1234567890abcdef1234567890abcdef',  # Replace with your template SID
+                content_variables=json.dumps({"1": "Cliente"})
             )
             logger.info(f"Mensaje de plantilla enviado a través de Twilio: SID {message.sid}, Estado: {message.status}")
             updated_message = client.messages(message.sid).fetch()
@@ -460,7 +391,6 @@ def whatsapp():
             if ask_contact_time:
                 conversation_state[phone]['messages_without_response'] = 0
 
-            logger.debug("Generating response with Grok")
             response = grok_client.chat.completions.create(
                 model="grok-beta",
                 messages=[
@@ -469,7 +399,6 @@ def whatsapp():
                 ]
             )
             reply = response.choices[0].message.content.strip()
-            logger.debug(f"Generated response: {reply}")
 
             messages = []
             current_message = ""
@@ -486,8 +415,6 @@ def whatsapp():
             if current_message:
                 messages.append(current_message.strip())
 
-            logger.debug(f"Mensajes generados para enviar: {messages}")
-
             if not messages:
                 messages = ["No sé exactamente, pero déjame investigarlo."]
 
@@ -500,15 +427,12 @@ def whatsapp():
             save_conversation_state()
             save_conversation_history(phone, conversation_state[phone]['history'])
 
-            logger.debug("Returning success response")
             return "Mensaje enviado"
     except Exception as e:
         logger.error(f"Error inesperado en /whatsapp: {str(e)}", exc_info=True)
         try:
-            if not phone.startswith('whatsapp:+'):
-                phone = f"whatsapp:+{phone.replace('whatsapp:', '')}"
             message = client.messages.create(
-                from_=WHATSAPP_SENDER_NUMBER,
+                from_='whatsapp:+15557571247',
                 body="Lo siento, ocurrió un error. ¿En qué más puedo ayudarte?",
                 to=phone
             )
@@ -536,16 +460,14 @@ def trigger_recontact():
     schedule_recontact()
     return "Recontact scheduling triggered"
 
-# Application Startup
 if __name__ == '__main__':
     load_conversation_state()
     download_projects_from_storage()
     downloadable_files = load_projects_from_folder()
-    port = int(os.getenv("PORT", DEFAULT_PORT))
-    service_url = os.getenv("SERVICE_URL", f"https://giselle-bot-250207106980.us-central1.run.app")  # Fallback to expected URL
+    port = int(os.getenv("PORT", 8080))
     logger.info(f"Puerto del servidor: {port}")
-    logger.info(f"URL del servicio: {service_url}")
-    logger.info(f"Configura el webhook en Twilio con: {service_url}/whatsapp")
+    logger.info("Nota: Cloud Run asignará una URL pública al deploy (por ejemplo, https://giselle-bot-abc123-uc.a.run.app)")
+    logger.info("Configura el webhook en Twilio con la URL pública del deployment + /whatsapp")
     logger.info("Iniciando servidor Flask...")
     app.run(host='0.0.0.0', port=port, debug=True)
     logger.info(f"Servidor Flask iniciado en el puerto {port}.")
