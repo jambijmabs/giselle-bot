@@ -13,8 +13,7 @@ from datetime import datetime, timedelta
 WHATSAPP_SENDER_NUMBER = "whatsapp:+15557571247"  # WhatsApp sender number
 TWILIO_ACCOUNT_SID = os.getenv('TWILIO_ACCOUNT_SID')
 TWILIO_AUTH_TOKEN = os.getenv('TWILIO_AUTH_TOKEN')
-GROK_API_KEY = os.getenv('GROK_API_KEY')
-GROK_API_BASE_URL = "https://api.x.ai/v1"
+OPENAI_API_KEY = os.getenv('OPENAI_API_KEY')
 GCS_BUCKET_NAME = "giselle-projects"
 GCS_BASE_PATH = "PROYECTOS"
 STATE_FILE = "conversation_state.json"
@@ -48,14 +47,14 @@ if not TWILIO_ACCOUNT_SID or not TWILIO_AUTH_TOKEN:
     raise ValueError("TWILIO_ACCOUNT_SID or TWILIO_AUTH_TOKEN not set")
 client = Client(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
 
-# Initialize Grok API client
-if not GROK_API_KEY:
-    logger.error("GROK_API_KEY not set in environment variables")
-    raise ValueError("GROK_API_KEY not set")
-grok_client = OpenAI(
-    api_key=GROK_API_KEY,
-    base_url=GROK_API_BASE_URL
-)
+# Initialize OpenAI (ChatGPT) client
+if not OPENAI_API_KEY:
+    logger.error("OPENAI_API_KEY not set in environment variables")
+    raise ValueError("OPENAI_API_KEY not set")
+openai_client = OpenAI(api_key=OPENAI_API_KEY)
+
+# Initialize Google Cloud Storage client
+storage_client = storage.Client()
 
 # Global dictionaries for project data and conversation state
 projects_data = {}
@@ -122,7 +121,6 @@ def download_projects_from_storage(bucket_name=GCS_BUCKET_NAME, base_path=GCS_BA
             os.makedirs(base_path)
             logger.debug(f"Created directory {base_path}")
 
-        storage_client = storage.Client()
         bucket = storage_client.bucket(bucket_name)
         blobs = bucket.list_blobs(prefix=base_path)
 
@@ -146,6 +144,14 @@ def extract_text_from_txt(txt_path):
     except Exception as e:
         logger.error(f"Error al leer archivo de texto {txt_path}: {str(e)}", exc_info=True)
         return ""
+
+def upload_file_to_gcs(bucket_name, source_file_path, destination_blob_name):
+    """Upload a file to Google Cloud Storage and return a public URL."""
+    bucket = storage_client.bucket(bucket_name)
+    blob = bucket.blob(destination_blob_name)
+    blob.upload_from_filename(source_file_path)
+    blob.make_public()  # Make the file publicly accessible
+    return blob.public_url
 
 def load_projects_from_folder(base_path=GCS_BASE_PATH):
     """Load project data from folder."""
@@ -329,7 +335,8 @@ def whatsapp():
                 'recontact_attempts': 0,
                 'no_interest': False,
                 'schedule_next': None,
-                'last_incoming_time': datetime.now().isoformat()
+                'last_incoming_time': datetime.now().isoformat(),
+                'introduced': False  # Track if introduction has been sent
             }
         else:
             conversation_state[phone]['history'] = history
@@ -385,6 +392,17 @@ def whatsapp():
                 for file in downloadable_files[project]:
                     link = downloadable_links.get(project, {}).get(file, "Enlace no disponible")
                     project_info += f"- {file}: {link}\n"
+                    # Upload the file to GCS and get a public URL
+                    file_path = os.path.join(GCS_BASE_PATH, project, "DESCARGABLES", file)
+                    public_url = upload_file_to_gcs(GCS_BUCKET_NAME, file_path, f"public/{project}/{file}")
+                    # Send the file via WhatsApp
+                    message = client.messages.create(
+                        from_=WHATSAPP_SENDER_NUMBER,
+                        body=f"Aquí tienes el archivo \"{file}\" que muestra la entrada del proyecto.",
+                        media_url=[public_url],
+                        to=phone
+                    )
+                    logger.info(f"Archivo enviado a través de Twilio: SID {message.sid}, Estado: {message.status}")
             project_info += "\n"
 
         conversation_history = "\n".join(conversation_state[phone]['history'])
@@ -435,21 +453,28 @@ def whatsapp():
             save_conversation_history(phone, conversation_state[phone]['history'])
             return "Mensaje enviado"
         else:
-            logger.debug("Generating prompt for Grok")
+            # Check if introduction has been sent
+            if not conversation_state[phone].get('introduced', False):
+                intro = "Hola, soy Giselle de FAV Living, tu asesora de ventas. ¿Cómo puedo ayudarte hoy con respecto a nuestras propiedades en Holbox?"
+                conversation_state[phone]['introduced'] = True
+            else:
+                intro = ""
+
+            logger.debug("Generating prompt for ChatGPT")
             prompt = (
                 f"Eres Giselle, una asesora de ventas de FAV Living, una empresa inmobiliaria. "
                 f"Tu objetivo es vender propiedades inmobiliarias de manera natural e improvisada, como lo haría una vendedora real. "
                 f"No uses respuestas predefinidas ni intentes estructurar la conversación de manera rígida. "
                 f"Responde únicamente basándote en la información de los proyectos que tienes disponible, sin inventar información adicional. "
-                f"Actúa como Grok, respondiendo de forma fluida y profesional, enfocándote en la venta de propiedades. "
+                f"Actúa de forma fluida y profesional, enfocándote en la venta de propiedades. "
                 f"Si el cliente hace una pregunta y no tienes la información exacta para responder, di algo como 'No sé exactamente, pero déjame investigarlo' "
                 f"y continúa la conversación de manera natural. "
                 f"No uses emoticones ni compartas información personal sobre ti más allá de tu rol en FAV Living.\n\n"
+                f"{intro}\n\n"
                 f"**Instrucciones para las respuestas:**\n"
                 f"- Responde de manera breve y profesional, como lo haría un humano en WhatsApp (1-2 frases por mensaje).\n"
-                f"- Si la respuesta tiene más de 2 frases, divídila en mensajes consecutivos (separa el texto en varias partes, cada una de 1-2 frases).\n"
+                f"- Si la respuesta tiene más de 2 frases, divídela en mensajes consecutivos (separa el texto en varias partes, cada una de 1-2 frases).\n"
                 f"- No uses viñetas ni formatos estructurados; escribe de forma fluida como un humano.\n"
-                f"- Si es la primera interacción, preséntate brevemente como asesora de ventas de FAV Living.\n"
                 f"- Si el cliente solicita información adicional o documentos (como presentaciones, precios, renders), incluye los nombres de los "
                 f"archivos descargables correspondientes si están disponibles, sin inventar enlaces.\n"
                 f"- Pregunta por el nombre del cliente de manera natural, pero no más de 1-2 veces en toda la conversación si no responde.\n"
@@ -465,24 +490,22 @@ def whatsapp():
                 f"Responde de forma breve y profesional, enfocándote en la venta de propiedades. Improvisa de manera natural, utilizando únicamente la información de los proyectos y archivos descargables proporcionados."
             )
 
-            if ask_name:
-                conversation_state[phone]['name_asked'] += 1
-            if ask_budget:
-                conversation_state[phone]['budget_asked'] += 1
-                conversation_state[phone]['messages_since_budget_ask'] = 0
-            if ask_contact_time:
-                conversation_state[phone]['messages_without_response'] = 0
-
-            logger.debug("Generating response with Grok")
-            response = grok_client.chat.completions.create(
-                model="grok-beta",
-                messages=[
-                    {"role": "system", "content": "Eres Giselle, una asesora de ventas de FAV Living, utilizando la IA de Grok."},
-                    {"role": "user", "content": prompt}
-                ]
-            )
-            reply = response.choices[0].message.content.strip()
-            logger.debug(f"Generated response: {reply}")
+            try:
+                logger.debug("Generating response with ChatGPT")
+                response = openai_client.chat.completions.create(
+                    model="gpt-4o",
+                    messages=[
+                        {"role": "system", "content": "Eres Giselle, una asesora de ventas de FAV Living..."},
+                        {"role": "user", "content": prompt}
+                    ],
+                    max_tokens=150,
+                    temperature=0.7
+                )
+                reply = response.choices[0].message.content.strip()
+                logger.debug(f"Generated response: {reply}")
+            except Exception as openai_e:
+                logger.error(f"Error con OpenAI API: {str(openai_e)}", exc_info=True)
+                reply = "Lo siento, no entiendo bien tu pregunta. ¿Puedes repetirla de otra forma?"
 
             messages = []
             current_message = ""
