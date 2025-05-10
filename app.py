@@ -2,12 +2,13 @@ import os
 import logging
 import sys
 import json
+import re
 from flask import Flask, request
 from twilio.rest import Client
 from google.cloud import storage
 from openai import OpenAI
 from datetime import datetime, timedelta
-import time  # Added to fix NameError
+import time
 import bot_config
 
 # Configuration Section
@@ -19,10 +20,6 @@ GCS_BUCKET_NAME = "giselle-projects"
 GCS_BASE_PATH = "PROYECTOS"
 STATE_FILE = "conversation_state.json"
 DEFAULT_PORT = 8080
-NO_INTEREST_PHRASES = [
-    "no me interesa", "no estoy interesado", "no quiero comprar",
-    "no gracias", "no por el momento", "no estoy buscando"
-]
 WHATSAPP_TEMPLATE_SID = "HX1234567890abcdef1234567890abcdef"
 WHATSAPP_TEMPLATE_VARIABLES = {"1": "Cliente"}
 
@@ -61,6 +58,7 @@ storage_client = storage.Client()
 projects_data = {}
 downloadable_links = {}
 conversation_state = {}
+downloadable_files = {}
 
 # Helper Functions
 def get_conversation_history_filename(phone):
@@ -114,7 +112,8 @@ def save_conversation_history(phone, history):
     filename = get_conversation_history_filename(phone)
     try:
         with open(filename, 'w', encoding='utf-8') as f:
-            f.write('\n'.join(history))
+            for msg in history:
+                f.write(f"{msg}\n")
         logger.info(f"Saved conversation history for {phone}")
     except Exception as e:
         logger.error(f"Error saving conversation history for {phone}: {str(e)}")
@@ -257,62 +256,6 @@ def send_consecutive_messages(phone, messages):
         if updated_message.status == "failed":
             logger.error(f"Error al enviar mensaje: {updated_message.error_code} - {updated_message.error_message}")
 
-def schedule_recontact():
-    """Schedule recontact for clients."""
-    current_time = datetime.now()
-    for phone, state in list(conversation_state.items()):
-        if state.get('no_interest', False):
-            continue
-
-        last_contact = state.get('last_contact')
-        recontact_attempts = state.get('recontact_attempts', 0)
-        schedule_next = state.get('schedule_next')
-
-        if schedule_next:
-            schedule_time_str = schedule_next.get('time')
-            try:
-                schedule_time = datetime.fromisoformat(schedule_time_str)
-            except ValueError as e:
-                logger.error(f"Error parsing schedule time for {phone}: {str(e)}")
-                state['schedule_next'] = None
-                save_conversation_state()
-                save_client_info(phone)
-                continue
-
-            if current_time >= schedule_time:
-                preferred_time = state.get('preferred_time', '10:00 AM')
-                messages = [
-                    "Hola, soy Giselle de FAV Living.",
-                    "Me pediste que te contactara. ¿Te interesa seguir hablando sobre el proyecto KABAN Holbox?"
-                ]
-                send_consecutive_messages(phone, messages)
-                state['schedule_next'] = None
-                state['last_contact'] = current_time.isoformat()
-                state['recontact_attempts'] = 0
-                conversation_state[phone]['history'].append("Giselle: Hola, soy Giselle de FAV Living.")
-                conversation_state[phone]['history'].append("Giselle: Me pediste que te contactara. ¿Te interesa seguir hablando sobre el proyecto KABAN Holbox?")
-                save_conversation_state()
-                save_conversation_history(phone, conversation_state[phone]['history'])
-                save_client_info(phone)
-            continue
-
-        if last_contact and recontact_attempts < 3:
-            last_contact_time = datetime.fromisoformat(last_contact)
-            if (current_time - last_contact_time).days >= 3:
-                preferred_time = state.get('preferred_time', '10:00 AM')
-                messages = [
-                    "Hola, soy Giselle de FAV Living.",
-                    "No hemos hablado en unos días. ¿Te gustaría saber más sobre KABAN Holbox?"
-                ]
-                send_consecutive_messages(phone, messages)
-                state['recontact_attempts'] = recontact_attempts + 1
-                state['last_contact'] = current_time.isoformat()
-                conversation_state[phone]['history'].append("Giselle: Hola, soy Giselle de FAV Living.")
-                conversation_state[phone]['history'].append("Giselle: No hemos hablado en unos días. ¿Te gustaría saber más sobre KABAN Holbox?")
-                save_conversation_state()
-                save_conversation_history(phone, conversation_state[phone]['history'])
-                save_client_info(phone)
-
 # Routes
 @app.route('/whatsapp', methods=['POST'])
 def whatsapp():
@@ -374,13 +317,13 @@ def whatsapp():
                     'history': history,
                     'name_asked': 0,
                     'budget_asked': 0,
-                    'contact_time_asked': 0,  # New field to track if asked for contact time
+                    'contact_time_asked': 0,
                     'messages_since_budget_ask': 0,
                     'messages_without_response': 0,
                     'preferred_time': None,
                     'preferred_days': None,
-                    'client_name': None,  # New field for client name
-                    'client_budget': None,  # New field for client budget
+                    'client_name': None,
+                    'client_budget': None,
                     'last_contact': datetime.now().isoformat(),
                     'recontact_attempts': 0,
                     'no_interest': False,
@@ -452,55 +395,24 @@ def whatsapp():
             save_client_info(phone)
 
         logger.debug("Checking for no-interest phrases")
-        if any(phrase in incoming_msg.lower() for phrase in NO_INTEREST_PHRASES):
+        if any(phrase in incoming_msg.lower() for phrase in bot_config.NO_INTEREST_PHRASES):
             conversation_state[phone]['no_interest'] = True
-            messages = ["Entendido, gracias por tu tiempo. Si cambias de opinión, aquí estaré."]
+            messages = bot_config.handle_no_interest_response()
             logger.info(f"Sending no-interest response: {messages}")
             send_consecutive_messages(phone, messages)
-            conversation_state[phone]['history'].append("Giselle: Entendido, gracias por tu tiempo. Si cambias de opinión, aquí estaré.")
+            conversation_state[phone]['history'].append(f"Giselle: {messages[0]}")
             save_conversation_state()
             save_conversation_history(phone, conversation_state[phone]['history'])
             save_client_info(phone)
             return "Mensaje enviado"
 
         logger.debug("Checking for recontact request")
-        recontact_pattern = r"(contacta|contáctame|contactarme)\s*(en)?\s*(\d+)\s*(minuto|minutos|hora|horas)?"
-        recontact_match = re.search(recontact_pattern, incoming_msg.lower())
-        if recontact_match:
-            time_amount = int(recontact_match.group(3))
-            time_unit = recontact_match.group(4) if recontact_match.group(4) else "minutos"
-            if time_unit.startswith("minuto"):
-                delta = timedelta(minutes=time_amount)
-            else:  # horas
-                delta = timedelta(hours=time_amount)
-            schedule_time = datetime.now() + delta
-            conversation_state[phone]['schedule_next'] = {'time': schedule_time.isoformat()}
-            messages = [f"Perfecto, te contactaré en {time_amount} {time_unit}. ¡Que tengas un buen día!"]
-            logger.info(f"Sending scheduled contact response: {messages}")
+        recontact_response = bot_config.handle_recontact_request(incoming_msg, conversation_state[phone])
+        if recontact_response:
+            messages = recontact_response
+            logger.info(f"Sending recontact response: {messages}")
             send_consecutive_messages(phone, messages)
-            conversation_state[phone]['history'].append(f"Giselle: Perfecto, te contactaré en {time_amount} {time_unit}. ¡Que tengas un buen día!")
-            save_conversation_state()
-            save_conversation_history(phone, conversation_state[phone]['history'])
-            save_client_info(phone)
-            return "Mensaje enviado"
-
-        logger.debug("Checking for recontact request (next week)")
-        if "próxima semana" in incoming_msg.lower() or "la próxima semana" in incoming_msg.lower():
-            schedule_time = datetime.now() + timedelta(days=7)
-            preferred_time = conversation_state[phone].get('preferred_time', '10:00 AM')
-            schedule_time = schedule_time.replace(
-                hour=int(preferred_time.split(':')[0]) if ':' in preferred_time else 10,
-                minute=int(preferred_time.split(':')[1].replace(' AM', '').replace(' PM', '')) if ':' in preferred_time else 0,
-                second=0,
-                microsecond=0
-            )
-            if 'PM' in preferred_time.upper() and schedule_time.hour < 12:
-                schedule_time = schedule_time.replace(hour=schedule_time.hour + 12)
-            conversation_state[phone]['schedule_next'] = {'time': schedule_time.isoformat()}
-            messages = ["Perfecto, te contactaré la próxima semana. ¡Que tengas un buen día!"]
-            logger.info(f"Sending scheduled contact response: {messages}")
-            send_consecutive_messages(phone, messages)
-            conversation_state[phone]['history'].append("Giselle: Perfecto, te contactaré la próxima semana. ¡Que tengas un buen día!")
+            conversation_state[phone]['history'].append(f"Giselle: {messages[0]}")
             save_conversation_state()
             save_conversation_history(phone, conversation_state[phone]['history'])
             save_client_info(phone)
@@ -529,24 +441,9 @@ def whatsapp():
 
         logger.debug("Determining conversation state")
         try:
-            ask_name = (
-                conversation_state[phone]['name_asked'] < 2 and
-                not conversation_state[phone].get('client_name') and
-                not any("mi nombre es" in msg.lower() for msg in conversation_history)
-            )
-            ask_budget = (
-                conversation_state[phone]['budget_asked'] < 2 and
-                conversation_state[phone]['messages_since_budget_ask'] >= 1 and
-                not conversation_state[phone].get('client_budget') and
-                not any("mi presupuesto es" in msg.lower() or "presupuesto de" in msg.lower() for msg in conversation_history)
-            )
-            ask_contact_time = (
-                conversation_state[phone]['contact_time_asked'] < 2 and
-                len(conversation_state[phone]['history']) >= 2 and
-                not conversation_state[phone].get('preferred_time') and
-                not conversation_state[phone].get('preferred_days') and
-                not any("prefiero ser contactado" in msg.lower() or "horario" in msg.lower() for msg in conversation_history)
-            )
+            ask_name = bot_config.should_ask_name(conversation_state[phone], conversation_history)
+            ask_budget = bot_config.should_ask_budget(conversation_state[phone], conversation_history)
+            ask_contact_time = bot_config.should_ask_contact_time(conversation_state[phone], conversation_history)
             logger.debug(f"Conversation state - ask_name: {ask_name}, ask_budget: {ask_budget}, ask_contact_time: {ask_contact_time}")
         except Exception as state_determination_e:
             logger.error(f"Error determining conversation state: {str(state_determination_e)}", exc_info=True)
@@ -584,7 +481,7 @@ def whatsapp():
         else:
             # Check if introduction has been sent
             if not conversation_state[phone].get('introduced', False):
-                intro = "Hola, soy Giselle de FAV Living, tu asesora de ventas. ¿A quién tengo el gusto de atender? ¿En qué puedo ayudarte hoy con respecto a nuestras propiedades en Holbox?"
+                intro = bot_config.INITIAL_INTRO
                 conversation_state[phone]['introduced'] = True
                 conversation_state[phone]['name_asked'] = 1
             else:
@@ -594,10 +491,10 @@ def whatsapp():
             if ask_name:
                 conversation_state[phone]['name_asked'] += 1
             if ask_budget:
-                intro += " A propósito, ¿cuál es tu presupuesto para la propiedad que estás buscando?"
+                intro += f" {bot_config.BUDGET_QUESTION}"
                 conversation_state[phone]['budget_asked'] += 1
             if ask_contact_time:
-                intro += " Por cierto, ¿en qué días y horarios prefieres que te contacte para hablar más sobre el proyecto?"
+                intro += f" {bot_config.CONTACT_TIME_QUESTION}"
                 conversation_state[phone]['contact_time_asked'] += 1
 
             logger.debug("Generating prompt for ChatGPT")
@@ -682,22 +579,22 @@ def whatsapp():
                         logger.debug(f"File uploaded to GCS, public URL: {public_url}")
                         message = client.messages.create(
                             from_=WHATSAPP_SENDER_NUMBER,
-                            body=f"Aquí tienes el archivo \"{requested_file}\".",
+                            body=bot_config.FILE_SENT_MESSAGE.format(requested_file=requested_file),
                             media_url=[public_url],
                             to=phone
                         )
                         logger.info(f"Archivo enviado a través de Twilio: SID {message.sid}, Estado: {message.status}")
-                        conversation_state[phone]['history'].append(f"Giselle: Aquí tienes el archivo \"{requested_file}\".")
+                        conversation_state[phone]['history'].append(f"Giselle: {bot_config.FILE_SENT_MESSAGE.format(requested_file=requested_file)}")
                         save_conversation_state()
                         save_conversation_history(phone, conversation_state[phone]['history'])
                         save_client_info(phone)
                         return "Mensaje enviado"
                     else:
                         logger.error(f"File {file_path} does not exist")
-                        messages.append(f"Lo siento, no encontré el archivo \"{requested_file}\". ¿Te gustaría ver otro archivo o más detalles del proyecto?")
+                        messages.append(bot_config.FILE_ERROR_MESSAGE.format(requested_file=requested_file))
                 except Exception as file_e:
                     logger.error(f"Error al enviar archivo: {str(file_e)}", exc_info=True)
-                    messages.append("Lo siento, no pude enviar el archivo solicitado. ¿Te gustaría ver otro archivo o más detalles del proyecto?")
+                    messages.append(bot_config.FILE_ERROR_MESSAGE.format(requested_file=requested_file))
 
             send_consecutive_messages(phone, messages)
 
@@ -750,7 +647,16 @@ def test():
 @app.route('/schedule_recontact', methods=['GET'])
 def trigger_recontact():
     logger.info("Triggering recontact scheduling")
-    schedule_recontact()
+    current_time = datetime.now()
+    for phone, state in list(conversation_state.items()):
+        messages, should_update = bot_config.handle_recontact(phone, state, current_time)
+        if messages:
+            send_consecutive_messages(phone, messages)
+            for msg in messages:
+                conversation_state[phone]['history'].append(f"Giselle: {msg}")
+            save_conversation_state()
+            save_conversation_history(phone, conversation_state[phone]['history'])
+            save_client_info(phone)
     return "Recontact scheduling triggered"
 
 # Application Startup
