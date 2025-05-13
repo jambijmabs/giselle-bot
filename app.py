@@ -3,6 +3,7 @@ import logging
 import sys
 import json
 import re
+import requests
 from flask import Flask, request
 from twilio.rest import Client
 from google.cloud import storage
@@ -266,9 +267,56 @@ def whatsapp():
         logger.debug(f"Request form data: {request.form}")
         logger.debug(f"Request values: {dict(request.values)}")
 
-        logger.debug("Extracting Body and From fields")
-        incoming_msg = request.values.get('Body', '').strip()
+        logger.debug("Extracting message content")
+        num_media = int(request.values.get('NumMedia', '0'))
         phone = request.values.get('From', '')
+
+        # Check if the message contains audio
+        if num_media > 0:
+            media_url = request.values.get('MediaUrl0', '')
+            media_content_type = request.values.get('MediaContentType0', '')
+            logger.debug(f"Media detected: URL={media_url}, Content-Type={media_content_type}")
+
+            if 'audio' in media_content_type:
+                # Download the audio file
+                audio_response = requests.get(media_url, auth=(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN))
+                if audio_response.status_code != 200:
+                    logger.error(f"Failed to download audio: {audio_response.status_code}")
+                    messages = ["Lo siento, no pude procesar tu mensaje de audio. ¿Puedes enviarlo como texto?"]
+                    send_consecutive_messages(phone, messages)
+                    return "Mensaje enviado"
+
+                # Save the audio file temporarily
+                audio_file_path = f"/tmp/audio_{phone.replace(':', '_')}.ogg"
+                with open(audio_file_path, 'wb') as f:
+                    f.write(audio_response.content)
+                logger.debug(f"Audio saved to {audio_file_path}")
+
+                # Transcribe the audio using Whisper
+                try:
+                    with open(audio_file_path, 'rb') as audio_file:
+                        transcription = openai_client.audio.transcriptions.create(
+                            model="whisper-1",
+                            file=audio_file,
+                            language="es"  # Assuming Spanish audio
+                        )
+                    incoming_msg = transcription.text.strip()
+                    logger.info(f"Audio transcribed: {incoming_msg}")
+                except Exception as e:
+                    logger.error(f"Error transcribing audio: {str(e)}", exc_info=True)
+                    messages = ["Lo siento, no pude entender tu mensaje de audio. ¿Puedes intentarlo de nuevo o escribirlo como texto?"]
+                    send_consecutive_messages(phone, messages)
+                    return "Mensaje enviado"
+                finally:
+                    # Clean up the temporary file
+                    if os.path.exists(audio_file_path):
+                        os.remove(audio_file_path)
+            else:
+                messages = ["Lo siento, solo puedo procesar mensajes de texto o audio. ¿Puedes enviar tu mensaje de otra forma?"]
+                send_consecutive_messages(phone, messages)
+                return "Mensaje enviado"
+        else:
+            incoming_msg = request.values.get('Body', '').strip()
 
         logger.debug(f"Incoming message: {incoming_msg}, Phone: {phone}")
 
