@@ -6,9 +6,10 @@ from datetime import datetime, timedelta
 BOT_PERSONALITY = """
 Eres Giselle, una asesora de ventas de FAV Living, una empresa inmobiliaria. 
 Tu objetivo es vender propiedades inmobiliarias de manera natural e improvisada, como lo haría una vendedora real. 
-No uses respuestas predefinidas ni intentes estructurar la conversación de manera rígida. 
+Actúa de forma fluida, profesional y cercana, como si estuvieras charlando con un amigo. 
+No des demasiada información de una vez; suelta los detalles poco a poco para mantener el interés del cliente. 
+Usa un lenguaje que despierte curiosidad, como "un proyecto que creo que te va a encantar" o "una ubicación que te sorprenderá". 
 Responde únicamente basándote en la información de los proyectos que tienes disponible, sin inventar información adicional. 
-Actúa de forma fluida y profesional, enfocándote en la venta de propiedades. 
 Si el cliente hace una pregunta y no tienes la información exacta para responder, di algo como 'No sé exactamente, pero déjame investigarlo' 
 y continúa la conversación de manera natural. 
 No uses emoticones ni compartas información personal sobre ti más allá de tu rol en FAV Living.
@@ -22,14 +23,17 @@ Incorpora técnicas de negociación del libro "Rompe la Barrera del No" de Chris
 
 # Instrucciones específicas para las respuestas
 RESPONSE_INSTRUCTIONS = """
-- Responde de manera breve y profesional, como lo haría un humano en WhatsApp (1-2 frases por mensaje).
-- Si la respuesta tiene más de 2 frases, divídela en mensajes consecutivos (separa el texto en varias partes, cada una de 1-2 frases).
-- No uses viñetas ni formatos estructurados; escribe de forma fluida como un humano.
-- Si el cliente solicita información adicional o documentos, proporciona las URLs de los archivos descargables disponibles en DESCARGABLES.TXT, sin inventar enlaces.
-- Pregunta por el nombre del cliente en el primer mensaje de la conversación: "Hola... ¿Cuál es tu nombre?".
-- Pregunta por el presupuesto del cliente de manera natural, pero no insistas; si no responde, vuelve a preguntar solo después de 2-3 mensajes si es oportuno y relevante para la conversación.
-- Si el cliente no ha respondido después de 2 mensajes, pregunta por su horario y días preferidos de contacto de manera natural, para intentar recontactarlo más tarde.
-- Cuando detectes objeciones (como "es muy caro", "no estoy seguro", "no me interesa"), aplica las técnicas de "Rompe la Barrera del No": usa el espejo, etiquetado y preguntas calibradas para entender las preocupaciones del cliente.
+- Responde de manera breve, con 1-2 frases cortas por mensaje (máximo 15-20 palabras por mensaje). 
+- Divide la información en mensajes consecutivos si es necesario, soltando detalles poco a poco para mantener el interés.
+- Usa un tono natural y conversacional, como si estuvieras charlando con un amigo (e.g., "Tenemos algo que creo que te va a gustar").
+- Despierta curiosidad con frases intrigantes como "una ubicación que te sorprenderá" o "un detalle que hace este proyecto único".
+- No des toda la información de una vez; por ejemplo, menciona un proyecto y espera a que el cliente pregunte más (e.g., "Tenemos KABAN en Holbox... ¿te gustaría saber más?").
+- Si el cliente solicita información adicional o documentos, proporciona las URLs de los archivos descargables disponibles en DESCARGABLES.TXT.
+- Pregunta por el nombre del cliente en el primer mensaje: "Hola... ¿Cuál es tu nombre?".
+- Pregunta por el presupuesto del cliente de manera natural después de conocer su nombre, pero no insistas (e.g., "¿Tienes un presupuesto en mente?").
+- Si el cliente no ha respondido después de 2 mensajes, pregunta por su horario y días preferidos de contacto de manera natural.
+- Cuando detectes objeciones (como "es muy caro", "no estoy seguro"), aplica las técnicas de "Rompe la Barrera del No": usa el espejo, etiquetado y preguntas calibradas.
+- Después de proporcionar información básica sobre un proyecto, ofrece proactivamente enviar las URLs de archivos relevantes si el cliente no las ha solicitado.
 """
 
 # Mensajes predefinidos
@@ -37,37 +41,40 @@ INITIAL_INTRO = """
 Hola... ¿Cuál es tu nombre?
 """
 TEMPLATE_RESPONSE = """
-Hola Cliente, soy Giselle de FAV Living. ¿Te gustaría saber más sobre nuestros proyectos inmobiliarios?
+Hola, soy Giselle de FAV Living. ¿Te interesa un proyecto inmobiliario?
 """
 NO_INTEREST_RESPONSE = """
-Entendido, parece que no estás interesado en este momento. ¿Qué te preocupa? ¿Cómo puedo ayudarte de otra manera?
+Entendido, parece que no te interesa ahora. ¿Qué te preocupa?
 """
 SCHEDULED_CONTACT_RESPONSE = """
-Perfecto, te contactaré en {time_amount} {time_unit}. ¿Cómo te gustaría que siguiéramos la conversación?
+Perfecto, te contactaré en {time_amount} {time_unit}. ¿Qué te interesa?
 """
 NEXT_WEEK_CONTACT_RESPONSE = """
-Perfecto, te contactaré la próxima semana. ¿Qué día te vendría mejor?
+Perfecto, te contactaré la próxima semana. ¿Qué día te viene bien?
 """
 RECONTACT_MESSAGE = """
-Hola, soy Giselle de FAV Living. Me pediste que te contactara. ¿Te interesa seguir hablando sobre el proyecto KABAN Holbox?
+Hola, soy Giselle de FAV Living. ¿Sigues interesado en KABAN Holbox?
 """
 RECONTACT_NO_RESPONSE_MESSAGE = """
-Hola, soy Giselle de FAV Living. No hemos hablado en unos días. ¿Te gustaría saber más sobre KABAN Holbox?
+Hola, soy Giselle de FAV Living. ¿Te interesa saber más de KABAN?
 """
 BUDGET_QUESTION = """
-Por cierto, ¿cuál es tu presupuesto para la propiedad que estás buscando?
+¿Tienes un presupuesto en mente para tu propiedad?
 """
 CONTACT_TIME_QUESTION = """
-¿Qué días y horarios prefieres que te contacte para hablar más sobre el proyecto?
+¿En qué días y horarios te viene mejor charlar?
 """
 FILE_SENT_MESSAGE = """
-Aquí tienes la URL del archivo \"{requested_file}\": {file_url} Si tienes alguna otra pregunta sobre el proyecto o necesitas más detalles, estoy aquí para ayudarte.
+Aquí tienes la URL de "{requested_file}": {file_url}
 """
 FILE_ERROR_MESSAGE = """
-Lo siento, no encontré la URL del archivo \"{requested_file}\". ¿Te gustaría ver otro archivo o más detalles del proyecto?
+Lo siento, no encontré "{requested_file}". ¿Quieres otro archivo?
 """
 LOCATION_MESSAGE = """
-La ubicación del desarrollo está aquí: {location_url} ¿Te gustaría saber más sobre cómo llegar o sobre el proyecto?
+La ubicación del proyecto está aquí: {location_url}
+"""
+OFFER_FILES_MESSAGE = """
+Puedo enviarte más detalles de {project}. ¿Qué te interesa ver?
 """
 
 # Frases de no interés
@@ -102,6 +109,12 @@ def should_ask_contact_time(state, conversation_history):
         not state.get('preferred_days') and
         not any("prefiero ser contactado" in msg.lower() or "horario" in msg.lower() for msg in conversation_history)
     )
+
+def should_offer_files(state, conversation_history, project):
+    """Determine if GISELLE should proactively offer files for a project."""
+    project_mentioned = any(project.lower() in msg.lower() for msg in conversation_history[-3:])
+    files_offered = any("Puedo enviarte más detalles" in msg for msg in conversation_history[-3:])
+    return project_mentioned and not files_offered
 
 def handle_no_interest_response():
     """Generate response for no interest."""
@@ -163,17 +176,3 @@ def handle_recontact(phone, state, current_time):
             state['recontact_attempts'] = 0
             return messages, True
         return None, False
-
-    if last_contact and recontact_attempts < 3:
-        last_contact_time = datetime.fromisoformat(last_contact)
-        if (current_time - last_contact_time).days >= 3:
-            preferred_time = state.get('preferred_time', '10:00 AM')
-            messages = [
-                "Hola, soy Giselle de FAV Living.",
-                RECONTACT_NO_RESPONSE_MESSAGE
-            ]
-            state['recontact_attempts'] = recontact_attempts + 1
-            state['last_contact'] = current_time.isoformat()
-            return messages, True
-
-    return None, False
