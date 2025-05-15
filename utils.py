@@ -10,7 +10,7 @@ logger = logging.getLogger(__name__)
 # Global dictionaries for project data
 projects_data = {}
 downloadable_links = {}
-downloadable_urls = {}
+downloadable_urls = {}  # Will now be populated from project files (e.g., KABAN.txt)
 downloadable_files = {}
 
 # Initialize Google Cloud Storage client
@@ -155,36 +155,8 @@ def extract_text_from_txt(txt_path):
         logger.error(f"Error al leer archivo de texto {txt_path}: {str(e)}", exc_info=True)
         return ""
 
-def load_downloadable_urls(project, base_path):
-    """Load downloadable URLs from DESCARGABLES.TXT."""
-    descargables_file = os.path.join(base_path, project, "DESCARGABLES", "DESCARGABLES.TXT")
-    urls = {}
-    try:
-        if os.path.exists(descargables_file):
-            logger.debug(f"Found DESCARGABLES.TXT for project {project} at {descargables_file}")
-            with open(descargables_file, 'r', encoding='utf-8') as f:
-                lines = f.readlines()
-                logger.debug(f"Lines in DESCARGABLES.TXT: {lines}")
-                for line in lines:
-                    line = line.strip()
-                    if line and ':' in line:
-                        key, url = line.split(':', 1)
-                        key = key.strip().lower()
-                        # Remove quotes around the URL if present
-                        url = url.strip()
-                        if url.startswith('"') and url.endswith('"'):
-                            url = url[1:-1]
-                        urls[key] = url
-            logger.info(f"Loaded downloadable URLs for {project}: {urls}")
-        else:
-            logger.warning(f"DESCARGABLES.TXT not found for project {project} at {descargables_file}")
-        return urls
-    except Exception as e:
-        logger.error(f"Error loading DESCARGABLES.TXT for {project}: {str(e)}")
-        return {}
-
 def load_projects_from_folder(base_path):
-    """Load project data from folder."""
+    """Load project data and URLs from project-specific .txt files."""
     global projects_data, downloadable_links, downloadable_urls, downloadable_files
     downloadable_files = {}
 
@@ -193,7 +165,7 @@ def load_projects_from_folder(base_path):
         logger.warning(f"Carpeta {base_path} creada, pero no hay proyectos.")
         return downloadable_files
 
-    projects = [d for d in os.listdir(base_path) if os.path.isdir(os.path.join(base_path, d)) and not d.startswith('.') and d != 'DESCARGABLES']
+    projects = [d for d in os.listdir(base_path) if os.path.isdir(os.path.join(base_path, d)) and not d.startswith('.')]
     if not projects:
         logger.warning(f"No se encontraron proyectos en {base_path}.")
         return downloadable_files
@@ -219,6 +191,25 @@ def load_projects_from_folder(base_path):
                 projects_data[project] = text
                 logger.info(f"Proyecto {project} procesado correctamente desde {file_path}.")
                 file_count += 1
+
+                # Extract URLs from the project file (e.g., KABAN.txt)
+                lines = text.split('\n')
+                in_urls_section = False
+                for line in lines:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    if line.startswith('Archivos Descargables:'):
+                        in_urls_section = True
+                        continue
+                    if in_urls_section and ':' in line:
+                        key, url = line.split(':', 1)
+                        key = key.strip().lower()
+                        url = url.strip()
+                        if url.startswith('"') and url.endswith('"'):
+                            url = url[1:-1]
+                        downloadable_urls[project][key] = url
+                logger.info(f"Loaded downloadable URLs for {project}: {downloadable_urls[project]}")
         else:
             logger.warning(f"No se encontró el archivo {project_file} para el proyecto {project}.")
 
@@ -226,24 +217,6 @@ def load_projects_from_folder(base_path):
             logger.info(f"Proyecto {project} procesado correctamente. {file_count} archivo(s) cargado(s).")
         else:
             logger.warning(f"No se encontraron archivos TXT válidos para el proyecto {project}.")
-
-        downloadable_path = os.path.join(project_path, 'DESCARGABLES')
-        downloadable_files[project] = []
-        if os.path.exists(downloadable_path):
-            downloadable_count = 0
-            for file in os.listdir(downloadable_path):
-                if file.endswith(('.pdf', '.jpg', '.jpeg', '.png')):
-                    downloadable_files[project].append(file)
-                    downloadable_count += 1
-            if downloadable_count > 0:
-                logger.info(f"Carpeta DESCARGABLES del proyecto {project} procesada correctamente. {downloadable_count} archivo(s) encontrado(s).")
-            else:
-                logger.warning(f"Carpeta DESCARGABLES del proyecto {project} está vacía o no contiene archivos válidos.")
-        else:
-            logger.warning(f"Carpeta DESCARGABLES no encontrada para el proyecto {project}.")
-
-        # Load URLs from DESCARGABLES.TXT
-        downloadable_urls[project] = load_downloadable_urls(project, base_path)
 
     return downloadable_files
 
