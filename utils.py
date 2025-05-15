@@ -14,7 +14,11 @@ downloadable_urls = {}  # Will now be populated from project files (e.g., KABAN.
 downloadable_files = {}
 
 # Initialize Google Cloud Storage client
-storage_client = storage.Client()
+try:
+    storage_client = storage.Client()
+except Exception as e:
+    logger.error(f"Error initializing Google Cloud Storage client: {str(e)}")
+    storage_client = None
 
 def get_conversation_history_filename(phone):
     """Generate the filename for conversation history based on phone number."""
@@ -26,27 +30,38 @@ def get_client_info_filename(phone):
 
 def upload_to_gcs(bucket_name, source_file_path, destination_blob_name):
     """Upload a file to Google Cloud Storage."""
-    bucket = storage_client.bucket(bucket_name)
-    blob = bucket.blob(destination_blob_name)
-    blob.upload_from_filename(source_file_path)
-    logger.info(f"Uploaded {source_file_path} to GCS as {destination_blob_name}")
+    if storage_client is None:
+        logger.error("Google Cloud Storage client not initialized. Cannot upload to GCS.")
+        return
+    try:
+        bucket = storage_client.bucket(bucket_name)
+        blob = bucket.blob(destination_blob_name)
+        blob.upload_from_filename(source_file_path)
+        logger.info(f"Uploaded {source_file_path} to GCS as {destination_blob_name}")
+    except Exception as e:
+        logger.error(f"Error uploading to GCS: {str(e)}")
 
 def download_from_gcs(bucket_name, source_blob_name, destination_file_path):
     """Download a file from Google Cloud Storage."""
-    bucket = storage_client.bucket(bucket_name)
-    blob = bucket.blob(source_blob_name)
-    blob.download_to_filename(destination_file_path)
-    logger.info(f"Downloaded {source_blob_name} from GCS to {destination_file_path}")
+    if storage_client is None:
+        logger.error("Google Cloud Storage client not initialized. Cannot download from GCS.")
+        return False
+    try:
+        bucket = storage_client.bucket(bucket_name)
+        blob = bucket.blob(source_blob_name)
+        blob.download_to_filename(destination_file_path)
+        logger.info(f"Downloaded {source_blob_name} from GCS to {destination_file_path}")
+        return True
+    except Exception as e:
+        logger.error(f"Error downloading from GCS: {str(e)}")
+        return False
 
 def load_conversation_state(conversation_state, gcs_bucket_name, gcs_conversations_path):
     """Load conversation state from file in GCS."""
     try:
         local_state_file = "/tmp/conversation_state.json"
         destination_blob_name = os.path.join(gcs_conversations_path, "conversation_state.json")
-        bucket = storage_client.bucket(gcs_bucket_name)
-        blob = bucket.blob(destination_blob_name)
-        if blob.exists():
-            blob.download_to_filename(local_state_file)
+        if download_from_gcs(gcs_bucket_name, destination_blob_name, local_state_file):
             with open(local_state_file, 'r') as f:
                 conversation_state.update(json.load(f))
             logger.info("Conversation state loaded from GCS")
@@ -74,15 +89,14 @@ def load_conversation_history(phone, gcs_bucket_name, gcs_conversations_path):
     destination_blob_name = os.path.join(gcs_conversations_path, filename)
     local_file_path = f"/tmp/{filename}"
     try:
-        bucket = storage_client.bucket(gcs_bucket_name)
-        blob = bucket.blob(destination_blob_name)
-        if blob.exists():
-            blob.download_to_filename(local_file_path)
+        if download_from_gcs(gcs_bucket_name, destination_blob_name, local_file_path):
             with open(local_file_path, 'r', encoding='utf-8') as f:
                 history = f.read().strip().split('\n')
             logger.info(f"Loaded conversation history for {phone} from GCS")
             return history
-        return []
+        else:
+            logger.info(f"No conversation history found for {phone} in GCS; starting fresh")
+            return []
     except Exception as e:
         logger.error(f"Error loading conversation history for {phone}: {str(e)}")
         return []
@@ -141,7 +155,7 @@ def download_projects_from_storage(bucket_name, base_path):
             blob.download_to_filename(local_path)
             logger.info(f"Descargado archivo desde Cloud Storage: {local_path}")
     except Exception as e:
-        logger.error(f"Error downloading projects from Cloud Storage: {str(e)}", exc_info=True)
+        logger.error(f"Error downloading projects from Cloud Storage: {str(e)}")
         raise
 
 def extract_text_from_txt(txt_path):
@@ -152,7 +166,7 @@ def extract_text_from_txt(txt_path):
         logger.info(f"Archivo de texto {txt_path} leído correctamente.")
         return text
     except Exception as e:
-        logger.error(f"Error al leer archivo de texto {txt_path}: {str(e)}", exc_info=True)
+        logger.error(f"Error al leer archivo de texto {txt_path}: {str(e)}")
         return ""
 
 def load_projects_from_folder(base_path):
@@ -201,6 +215,7 @@ def load_projects_from_folder(base_path):
                         continue
                     if line.startswith('Archivos Descargables:'):
                         in_urls_section = True
+                        logger.debug(f"Found Archivos Descargables section in {project_file}")
                         continue
                     if in_urls_section and ':' in line:
                         key, url = line.split(':', 1)
@@ -209,6 +224,7 @@ def load_projects_from_folder(base_path):
                         if url.startswith('"') and url.endswith('"'):
                             url = url[1:-1]
                         downloadable_urls[project][key] = url
+                        logger.debug(f"Loaded URL for {project}: {key} -> {url}")
                 logger.info(f"Loaded downloadable URLs for {project}: {downloadable_urls[project]}")
         else:
             logger.warning(f"No se encontró el archivo {project_file} para el proyecto {project}.")
