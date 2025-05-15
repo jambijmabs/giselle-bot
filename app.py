@@ -36,20 +36,20 @@ app = Flask(__name__)
 logger = logging.getLogger(__name__)
 
 # Initialize Twilio client
+client = None
 try:
     if not TWILIO_ACCOUNT_SID or not TWILIO_AUTH_TOKEN:
-        logger.error("TWILIO_ACCOUNT_SID or TWILIO_AUTH_TOKEN not set in environment variables")
-        raise ValueError("TWILIO_ACCOUNT_SID or TWILIO_AUTH_TOKEN not set")
-    client = Client(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
-    logger.info("Twilio client initialized successfully")
+        logger.warning("TWILIO_ACCOUNT_SID or TWILIO_AUTH_TOKEN not set in environment variables. Twilio client will not be initialized.")
+    else:
+        client = Client(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
+        logger.info("Twilio client initialized successfully")
 except Exception as e:
     logger.error(f"Failed to initialize Twilio client: {str(e)}")
-    sys.exit(1)
+    client = None
 
 # Initialize OpenAI client (will be used in message_handler)
 if not OPENAI_API_KEY:
-    logger.error("OPENAI_API_KEY not set in environment variables")
-    raise ValueError("OPENAI_API_KEY not set")
+    logger.warning("OPENAI_API_KEY not set in environment variables. Some functionality may not work.")
 
 # Global conversation state
 conversation_state = {}
@@ -65,6 +65,10 @@ def health():
 def whatsapp():
     logger.debug("Entered /whatsapp route")
     try:
+        if client is None:
+            logger.error("Twilio client not initialized. Cannot process WhatsApp messages.")
+            return "Error: Twilio client not initialized", 500
+
         # Log the entire request data for debugging
         logger.debug(f"Request headers: {dict(request.headers)}")
         logger.debug(f"Request form data: {request.form}")
