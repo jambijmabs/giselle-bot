@@ -279,6 +279,7 @@ def whatsapp():
         # Update the last mentioned project in conversation state
         if mentioned_project:
             conversation_state[phone]['last_mentioned_project'] = mentioned_project
+            logger.debug(f"Updated last_mentioned_project to: {mentioned_project}")
 
         utils.send_consecutive_messages(phone, messages, client, WHATSAPP_SENDER_NUMBER)
 
