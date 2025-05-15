@@ -1,5 +1,6 @@
 import re
 import logging
+import requests
 from openai import OpenAI
 import bot_config
 
@@ -10,7 +11,6 @@ logger = logging.getLogger(__name__)
 openai_client = None
 projects_data = {}
 downloadable_urls = {}
-project_details = {}
 
 def initialize_message_handler(openai_api_key, projects_data_ref, downloadable_urls_ref):
     global openai_client, projects_data, downloadable_urls
@@ -18,44 +18,6 @@ def initialize_message_handler(openai_api_key, projects_data_ref, downloadable_u
     projects_data = projects_data_ref
     downloadable_urls = downloadable_urls_ref
     logger.debug(f"Initialized with projects_data: {list(projects_data.keys())}")
-    logger.debug(f"Initialized with downloadable_urls: {downloadable_urls}")
-    extract_project_details()
-
-def extract_project_details():
-    global project_details
-    project_details = {}
-    for project, data in projects_data.items():
-        project_details[project] = {'prices': [], 'payment_plans': [], 'discounts': {}}
-        lines = data.split('\n')
-        current_section = None
-
-        for line in lines:
-            line = line.strip()
-            if line.startswith('Unidades Disponibles:'):
-                current_section = 'prices'
-                continue
-            elif line.startswith('Planes de Pago:'):
-                current_section = 'payment_plans'
-                continue
-
-            if current_section == 'prices' and line.startswith('-'):
-                match = re.match(r'- (.*?): (\d+ recámaras), \$([\d,]+) USD', line)
-                if match:
-                    unit_name, bedrooms, price = match.groups()
-                    price = price.replace(',', '')
-                    project_details[project]['prices'].append({
-                        'unit': unit_name,
-                        'bedrooms': bedrooms,
-                        'price': f"${price} USD"
-                    })
-            elif current_section == 'payment_plans' and line.startswith('-'):
-                match = re.match(r'- Opción (.*?): (.*?) \((\d+)% descuento\)', line)
-                if match:
-                    option, plan, discount = match.groups()
-                    project_details[project]['payment_plans'].append({'option': option, 'plan': plan})
-                    project_details[project]['discounts'][option] = f"{discount}%"
-
-        logger.debug(f"Extracted details for {project}: {project_details[project]}")
 
 def process_message(incoming_msg, phone, conversation_state, project_info, conversation_history):
     logger.debug(f"Processing message: {incoming_msg}")
@@ -85,48 +47,95 @@ def process_message(incoming_msg, phone, conversation_state, project_info, conve
     client_name = conversation_state[phone].get('client_name', 'Cliente') or 'Cliente'
     logger.debug(f"Using client_name: {client_name}")
 
-    # Responder a solicitudes de precios
-    if any(keyword in normalized_msg for keyword in ["precio", "cuesta", "cuánto"]):
-        if mentioned_project and mentioned_project in project_details:
-            prices = project_details[mentioned_project]['prices']
-            if prices:
-                messages.append(f"¡Hola {client_name}! Te comparto los precios de {mentioned_project}:")
-                for price_info in prices:
-                    messages.append(f"- {price_info['unit']}: {price_info['bedrooms']} por {price_info['price']}")
-                messages.append("¿Te interesa alguna unidad o más detalles?")
-            else:
-                messages.append(f"Lo siento, {client_name}, no tengo precios para {mentioned_project} ahora.")
-        else:
-            messages.append(f"Lo siento, {client_name}, no tengo información de ese proyecto.")
-        return messages, mentioned_project
+    # Prepare the project data for the AI
+    project_data = projects_data.get(mentioned_project, "Información no disponible para este proyecto.")
 
-    # Responder a solicitudes de archivos
-    if any(keyword in normalized_msg for keyword in ["presentación", "envíame", "mándame"]):
-        if mentioned_project and mentioned_project in downloadable_urls:
-            file_key = 'presentacion de venta'  # Normalizar según el archivo
-            file_url = downloadable_urls[mentioned_project].get(file_key)
-            logger.debug(f"Looking for file '{file_key}' in {mentioned_project}: {file_url}")
-            if file_url:
-                messages.append(f"¡Claro, {client_name}! Aquí tienes la presentación de {mentioned_project}:")
-                messages.append(file_url)
-            else:
-                messages.append(f"Lo siento, {client_name}, no encontré la presentación de {mentioned_project}.")
-        return messages, mentioned_project
-
-    # Respuesta genérica con OpenAI
+    # Build the prompt for the AI
     prompt = (
-        f"{bot_config.BOT_PERSONALITY}\n"
-        f"**Información de proyectos:**\n{project_info}\n"
-        f"**Historial:**\n{conversation_history}\n"
-        f"**Mensaje:** \"{incoming_msg}\""
+        f"{bot_config.BOT_PERSONALITY}\n\n"
+        f"**Instrucciones para las respuestas:**\n"
+        f"{bot_config.RESPONSE_INSTRUCTIONS}\n\n"
+        f"**Información de los proyectos disponibles:**\n"
+        f"{project_info}\n\n"
+        f"**Datos específicos del proyecto {mentioned_project}:**\n"
+        f"{project_data}\n\n"
+        f"**Historial de conversación:**\n"
+        f"{conversation_history}\n\n"
+        f"**Mensaje del cliente:** \"{incoming_msg}\"\n\n"
+        f"Responde de forma breve y profesional, enfocándote en la venta de propiedades. "
+        f"Interpreta la información del proyecto de manera natural para responder a las preguntas del cliente, "
+        f"como precios, URLs de archivos descargables, o cualquier otro detalle. "
+        f"Si el cliente pregunta por algo que no está en los datos del proyecto, responde con una frase como "
+        f"'No sé exactamente, pero déjame investigarlo con más detalle para ti.'"
     )
-    response = openai_client.chat.completions.create(
-        model=bot_config.CHATGPT_MODEL,
-        messages=[{"role": "user", "content": prompt}],
-        max_tokens=100,
-        temperature=0.7
-    )
-    reply = response.choices[0].message.content.strip()
-    messages.append(reply)
+    logger.debug(f"ChatGPT prompt: {prompt}")
 
+    try:
+        response = openai_client.chat.completions.create(
+            model=bot_config.CHATGPT_MODEL,
+            messages=[
+                {"role": "system", "content": bot_config.BOT_PERSONALITY},
+                {"role": "user", "content": prompt}
+            ],
+            max_tokens=150,
+            temperature=0.7
+        )
+        reply = response.choices[0].message.content.strip()
+        logger.debug(f"Generated response: {reply}")
+    except Exception as openai_e:
+        logger.error(f"Fallo con OpenAI API: {str(openai_e)}")
+        reply = "Lo siento, no entiendo bien tu pregunta."
+
+    # Split the reply into messages
+    current_message = ""
+    sentences = reply.split('. ')
+    for sentence in sentences:
+        if not sentence:
+            continue
+        sentence = sentence.strip()
+        if sentence:
+            if len(current_message.split('\n')) < 2 and len(current_message) < 100:
+                current_message += (sentence + '. ') if current_message else sentence + '. '
+            else:
+                messages.append(current_message.strip())
+                current_message = sentence + '. '
+    if current_message:
+        messages.append(current_message.strip())
+
+    if not messages:
+        messages = ["No sé exactamente, pero déjame investigarlo con más detalle para ti."]
+
+    logger.debug(f"Final messages: {messages}")
     return messages, mentioned_project
+
+def handle_audio_message(media_url, phone, twilio_account_sid, twilio_auth_token):
+    """Handle audio messages by transcribing them."""
+    logger.debug("Handling audio message")
+    audio_response = requests.get(media_url, auth=(twilio_account_sid, twilio_auth_token))
+    if audio_response.status_code != 200:
+        logger.error(f"Failed to download audio: {audio_response.status_code}")
+        return ["Lo siento, no pude procesar tu mensaje de audio. ¿Puedes enviarlo como texto?"], None
+
+    # Save the audio file temporarily
+    audio_file_path = f"/tmp/audio_{phone.replace(':', '_')}.ogg"
+    with open(audio_file_path, 'wb') as f:
+        f.write(audio_response.content)
+    logger.debug(f"Audio saved to {audio_file_path}")
+
+    # Transcribe the audio using Whisper
+    try:
+        with open(audio_file_path, 'rb') as audio_file:
+            transcription = openai_client.audio.transcriptions.create(
+                model="whisper-1",
+                file=audio_file,
+                language="es"  # Assuming Spanish audio
+            )
+        incoming_msg = transcription.text.strip()
+        logger.info(f"Audio transcribed: {incoming_msg}")
+        return None, incoming_msg
+    except Exception as e:
+        logger.error(f"Error transcribing audio: {str(e)}")
+        return ["Lo siento, no pude entender tu mensaje de audio. ¿Puedes intentarlo de nuevo o escribirlo como texto?"], None
+    finally:
+        if os.path.exists(audio_file_path):
+            os.remove(audio_file_path)
