@@ -36,6 +36,9 @@ RESPONSE_INSTRUCTIONS = """
 - Después de proporcionar información básica sobre un proyecto, ofrece proactivamente enviar las URLs de archivos relevantes si el cliente no las ha solicitado.
 """
 
+# ChatGPT model to use
+CHATGPT_MODEL = "gpt-4.1-mini"  # Moved from app.py
+
 # Mensajes predefinidos
 INITIAL_INTRO = """
 Hola... ¿Cuál es tu nombre?
