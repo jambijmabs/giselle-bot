@@ -18,8 +18,6 @@ GCS_BASE_PATH = "PROYECTOS"
 GCS_CONVERSATIONS_PATH = "CONVERSATIONS"
 STATE_FILE = "conversation_state.json"
 DEFAULT_PORT = 8080
-WHATSAPP_TEMPLATE_SID = "HX1234567890abcdef1234567890abcdef"
-WHATSAPP_TEMPLATE_VARIABLES = {"1": "Cliente"}
 
 # Configure logging
 logging.basicConfig(
@@ -227,15 +225,14 @@ def whatsapp():
 
         # Prepare project information
         project_info = ""
-        mentioned_project = None
         try:
             for project, data in utils.projects_data.items():
                 project_info += f"Proyecto: {project}\n"
                 project_info += "Es un desarrollo que creo que te va a interesar.\n"
                 project_info += "\n"
                 if project.lower() in incoming_msg.lower():
-                    mentioned_project = project
                     conversation_state[phone]['last_mentioned_project'] = project  # Persist the mentioned project
+                    logger.debug(f"Updated last_mentioned_project to: {project}")
             logger.debug(f"Project info prepared: {project_info}")
         except Exception as project_info_e:
             logger.error(f"Error preparing project information: {str(project_info_e)}")
@@ -244,37 +241,17 @@ def whatsapp():
         # Build conversation history
         conversation_history = "\n".join(conversation_state[phone]['history'])
 
-        # Check 24-hour session window
-        last_incoming_time = datetime.fromisoformat(conversation_state[phone]['last_incoming_time'])
-        time_since_last_incoming = datetime.now() - last_incoming_time
-        use_template = time_since_last_incoming > timedelta(hours=24)
-
-        if use_template:
-            logger.debug("Sending template message")
-            message = client.messages.create(
-                from_=WHATSAPP_SENDER_NUMBER,
-                to=phone,
-                content_sid=WHATSAPP_TEMPLATE_SID,
-                content_variables=json.dumps(WHATSAPP_TEMPLATE_VARIABLES)
-            )
-            logger.info(f"Mensaje de plantilla enviado a través de Twilio: SID {message.sid}, Estado: {message.status}")
-            updated_message = client.messages(message.sid).fetch()
-            logger.info(f"Estado del mensaje actualizado: {updated_message.status}")
-            if updated_message.status == "failed":
-                logger.error(f"Error al enviar mensaje de plantilla: {updated_message.error_code} - {updated_message.error_message}")
-
-            template_response = bot_config.TEMPLATE_RESPONSE
-            conversation_state[phone]['history'].append(f"Giselle: {template_response}")
-            conversation_state[phone]['history'] = conversation_state[phone]['history'][-10:]
-            utils.save_conversation_state(conversation_state, GCS_BUCKET_NAME, GCS_CONVERSATIONS_PATH)
-            utils.save_conversation_history(phone, conversation_state[phone]['history'], GCS_BUCKET_NAME, GCS_CONVERSATIONS_PATH)
-            utils.save_client_info(phone, conversation_state, GCS_BUCKET_NAME, GCS_CONVERSATIONS_PATH)
-            return "Mensaje enviado"
-
         # Process the message and generate a response
-        messages, mentioned_project = message_handler.process_message(
-            incoming_msg, phone, conversation_state, project_info, conversation_history
-        )
+        try:
+            messages, mentioned_project = message_handler.process_message(
+                incoming_msg, phone, conversation_state, project_info, conversation_history
+            )
+            logger.debug(f"Messages generated: {messages}")
+            logger.debug(f"Mentioned project after processing: {mentioned_project}")
+        except Exception as e:
+            logger.error(f"Error processing message: {str(e)}")
+            messages = ["Lo siento, ocurrió un error al procesar tu mensaje. ¿En qué más puedo ayudarte?"]
+            mentioned_project = None
 
         # Update the last mentioned project in conversation state
         if mentioned_project:
@@ -345,17 +322,26 @@ def trigger_recontact():
 
 # Application Startup
 if __name__ == '__main__':
-    utils.load_conversation_state(conversation_state, GCS_BUCKET_NAME, GCS_CONVERSATIONS_PATH)
-    utils.download_projects_from_storage(GCS_BUCKET_NAME, GCS_BASE_PATH)
-    utils.load_projects_from_folder(GCS_BASE_PATH)
-    message_handler.initialize_message_handler(
-        OPENAI_API_KEY, utils.projects_data, utils.downloadable_urls
-    )
-    port = int(os.getenv("PORT", DEFAULT_PORT))
-    service_url = os.getenv("SERVICE_URL", f"https://giselle-bot-250207106980.us-central1.run.app")
-    logger.info(f"Puerto del servidor: {port}")
-    logger.info(f"URL del servicio: {service_url}")
-    logger.info(f"Configura el webhook en Twilio con: {service_url}/whatsapp")
-    logger.info("Iniciando servidor Flask...")
-    app.run(host='0.0.0.0', port=port, debug=True)
-    logger.info(f"Servidor Flask iniciado en el puerto {port}.")
+    try:
+        logger.info("Starting application initialization...")
+        utils.load_conversation_state(conversation_state, GCS_BUCKET_NAME, GCS_CONVERSATIONS_PATH)
+        logger.info("Conversation state loaded")
+        utils.download_projects_from_storage(GCS_BUCKET_NAME, GCS_BASE_PATH)
+        logger.info("Projects downloaded from storage")
+        utils.load_projects_from_folder(GCS_BASE_PATH)
+        logger.info("Projects loaded from folder")
+        message_handler.initialize_message_handler(
+            OPENAI_API_KEY, utils.projects_data, utils.downloadable_urls
+        )
+        logger.info("Message handler initialized")
+        port = int(os.getenv("PORT", DEFAULT_PORT))
+        service_url = os.getenv("SERVICE_URL", f"https://giselle-bot-250207106980.us-central1.run.app")
+        logger.info(f"Puerto del servidor: {port}")
+        logger.info(f"URL del servicio: {service_url}")
+        logger.info(f"Configura el webhook en Twilio con: {service_url}/whatsapp")
+        logger.info("Iniciando servidor Flask...")
+        app.run(host='0.0.0.0', port=port, debug=False)  # Disable debug mode for production
+        logger.info(f"Servidor Flask iniciado en el puerto {port}.")
+    except Exception as e:
+        logger.error(f"Failed to start application: {str(e)}")
+        sys.exit(1)
