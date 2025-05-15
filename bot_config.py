@@ -368,6 +368,7 @@ def whatsapp():
                 send_consecutive_messages(phone, messages)
                 return "Mensaje enviado"
         else:
+            logger.debug("Processing text message")
             incoming_msg = request.values.get('Body', '').strip()
 
         logger.debug(f"Incoming message: {incoming_msg}, Phone: {phone}")
@@ -471,21 +472,21 @@ def whatsapp():
         conversation_state[phone]['last_contact'] = datetime.now().isoformat()
         conversation_state[phone]['messages_since_budget_ask'] += 1
 
-        # Check for client name in the message
+        logger.debug("Checking for client name in the message")
         if "mi nombre es" in incoming_msg.lower():
             name = incoming_msg.lower().split("mi nombre es")[-1].strip()
             conversation_state[phone]['client_name'] = name.capitalize()
             logger.info(f"Client name set to: {conversation_state[phone]['client_name']}")
             save_client_info(phone)
 
-        # Check for client budget in the message
+        logger.debug("Checking for client budget in the message")
         if "mi presupuesto es" in incoming_msg.lower() or "presupuesto de" in incoming_msg.lower():
             budget = incoming_msg.lower().split("presupuesto")[-1].strip()
             conversation_state[phone]['client_budget'] = budget
             logger.info(f"Client budget set to: {budget}")
             save_client_info(phone)
 
-        # Check for preferred days and time in the message
+        logger.debug("Checking for preferred days and time in the message")
         if "prefiero ser contactado" in incoming_msg.lower() or "horario" in incoming_msg.lower():
             if "prefiero ser contactado" in incoming_msg.lower():
                 days = incoming_msg.lower().split("prefiero ser contactado")[-1].strip()
@@ -617,7 +618,7 @@ def whatsapp():
             messages = []
             logger.debug("Attempting to generate response with ChatGPT")
             try:
-                logger.debug("Generating response with ChatGPT")
+                logger.debug(f"Calling OpenAI with model: {CHATGPT_MODEL}")
                 response = openai_client.chat.completions.create(
                     model=CHATGPT_MODEL,  # Use the constant defined at the top
                     messages=[
@@ -661,6 +662,7 @@ def whatsapp():
                 messages = ["No sé exactamente, pero déjame investigarlo."]
 
             # Check for file requests or location requests
+            logger.debug("Checking for file or location requests")
             requested_file = None
             project = None
             for proj in downloadable_urls.keys():
@@ -705,7 +707,7 @@ def whatsapp():
                     mentioned_project = list(downloadable_urls.keys())[0]
 
                 if mentioned_project:
-                    file_urls = readable_urls.get(mentioned_project, {})
+                    file_urls = downloadable_urls.get(mentioned_project, {})
                     location_url = file_urls.get("ubicación en google maps")
                     if location_url:
                         messages.append(bot_config.LOCATION_MESSAGE.format(location_url=location_url))
@@ -714,6 +716,7 @@ def whatsapp():
             elif mentioned_project and bot_config.should_offer_files(conversation_state[phone], conversation_history, mentioned_project):
                 messages.append(bot_config.OFFER_FILES_MESSAGE.format(project=mentioned_project))
 
+            logger.debug("Sending messages")
             send_consecutive_messages(phone, messages)
 
             for msg in messages:
