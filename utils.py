@@ -170,7 +170,7 @@ def extract_text_from_txt(txt_path):
         return ""
 
 def load_projects_from_folder(base_path):
-    """Load project data and URLs from project-specific .txt files."""
+    """Load project data from project-specific .txt files."""
     global projects_data, downloadable_links, downloadable_urls, downloadable_files
     downloadable_files = {}
 
@@ -205,27 +205,8 @@ def load_projects_from_folder(base_path):
                 projects_data[project] = text
                 logger.info(f"Proyecto {project} procesado correctamente desde {file_path}.")
                 file_count += 1
-
-                # Extract URLs from the project file (e.g., KABAN.txt)
-                lines = text.split('\n')
-                in_urls_section = False
-                for line in lines:
-                    line = line.strip()
-                    if not line:
-                        continue
-                    if line.startswith('Archivos Descargables:'):
-                        in_urls_section = True
-                        logger.debug(f"Found Archivos Descargables section in {project_file}")
-                        continue
-                    if in_urls_section and ':' in line:
-                        key, url = line.split(':', 1)
-                        key = key.strip().lower()
-                        url = url.strip()
-                        if url.startswith('"') and url.endswith('"'):
-                            url = url[1:-1]
-                        downloadable_urls[project][key] = url
-                        logger.debug(f"Loaded URL for {project}: {key} -> {url}")
-                logger.info(f"Loaded downloadable URLs for {project}: {downloadable_urls[project]}")
+                # Log the raw content for debugging
+                logger.debug(f"Raw content of {project_file}:\n{text}")
         else:
             logger.warning(f"No se encontró el archivo {project_file} para el proyecto {project}.")
 
