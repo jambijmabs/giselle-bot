@@ -133,7 +133,8 @@ def whatsapp():
                     'schedule_next': None,
                     'last_incoming_time': datetime.now().isoformat(),
                     'introduced': False,
-                    'project_info_shared': {}
+                    'project_info_shared': {},
+                    'last_mentioned_project': None  # New field to persist mentioned project
                 }
             else:
                 conversation_state[phone]['history'] = history
@@ -158,7 +159,8 @@ def whatsapp():
                 'schedule_next': None,
                 'last_incoming_time': datetime.now().isoformat(),
                 'introduced': False,
-                'project_info_shared': {}
+                'project_info_shared': {},
+                'last_mentioned_project': None
             }
 
         conversation_state[phone]['history'].append(f"Cliente: {incoming_msg}")
@@ -172,6 +174,13 @@ def whatsapp():
             conversation_state[phone]['client_name'] = name.capitalize()
             logger.info(f"Client name set to: {conversation_state[phone]['client_name']}")
             utils.save_client_info(phone, conversation_state, GCS_BUCKET_NAME, GCS_CONVERSATIONS_PATH)
+        elif conversation_state[phone].get('name_asked', 0) > 0 and not conversation_state[phone].get('client_name'):
+            # If GISELLE has asked for the name and no name has been set, assume the response is the name
+            name = incoming_msg.strip()
+            if name:  # Ensure the response isn't empty
+                conversation_state[phone]['client_name'] = name.capitalize()
+                logger.info(f"Client name set to: {conversation_state[phone]['client_name']}")
+                utils.save_client_info(phone, conversation_state, GCS_BUCKET_NAME, GCS_CONVERSATIONS_PATH)
 
         # Check for client budget in the message
         if "mi presupuesto es" in incoming_msg.lower() or "presupuesto de" in incoming_msg.lower():
@@ -226,6 +235,7 @@ def whatsapp():
                 project_info += "\n"
                 if project.lower() in incoming_msg.lower():
                     mentioned_project = project
+                    conversation_state[phone]['last_mentioned_project'] = project  # Persist the mentioned project
             logger.debug(f"Project info prepared: {project_info}")
         except Exception as project_info_e:
             logger.error(f"Error preparing project information: {str(project_info_e)}")
@@ -265,6 +275,10 @@ def whatsapp():
         messages, mentioned_project = message_handler.process_message(
             incoming_msg, phone, conversation_state, project_info, conversation_history
         )
+
+        # Update the last mentioned project in conversation state
+        if mentioned_project:
+            conversation_state[phone]['last_mentioned_project'] = mentioned_project
 
         utils.send_consecutive_messages(phone, messages, client, WHATSAPP_SENDER_NUMBER)
 
