@@ -24,6 +24,7 @@ STATE_FILE = "conversation_state.json"
 DEFAULT_PORT = 8080
 WHATSAPP_TEMPLATE_SID = "HX1234567890abcdef1234567890abcdef"
 WHATSAPP_TEMPLATE_VARIABLES = {"1": "Cliente"}
+CHATGPT_MODEL = "gpt-4.1-mini"  # Define the ChatGPT model here
 
 # Configure logging
 logging.basicConfig(
@@ -59,7 +60,7 @@ storage_client = storage.Client()
 # Global dictionaries for project data and conversation state
 projects_data = {}
 downloadable_links = {}
-downloadable_urls = {}  # New dictionary for URLs from DESCARGABLES.TXT
+downloadable_urls = {}  # Dictionary for URLs from DESCARGABLES.TXT
 conversation_state = {}
 downloadable_files = {}
 
@@ -211,12 +212,20 @@ def load_downloadable_urls(project):
     urls = {}
     try:
         if os.path.exists(descargables_file):
+            logger.debug(f"Found DESCARGABLES.TXT for project {project} at {descargables_file}")
             with open(descargables_file, 'r', encoding='utf-8') as f:
-                for line in f:
-                    if ':' in line:
+                lines = f.readlines()
+                logger.debug(f"Lines in DESCARGABLES.TXT: {lines}")
+                for line in lines:
+                    line = line.strip()
+                    if line and ':' in line:
                         key, url = line.split(':', 1)
-                        urls[key.strip()] = url.strip()
+                        key = key.strip().lower()
+                        url = url.strip()
+                        urls[key] = url
             logger.info(f"Loaded downloadable URLs for {project}: {urls}")
+        else:
+            logger.warning(f"DESCARGABLES.TXT not found for project {project} at {descargables_file}")
         return urls
     except Exception as e:
         logger.error(f"Error loading DESCARGABLES.TXT for {project}: {str(e)}")
@@ -420,7 +429,8 @@ def whatsapp():
                     'no_interest': False,
                     'schedule_next': None,
                     'last_incoming_time': datetime.now().isoformat(),
-                    'introduced': False
+                    'introduced': False,
+                    'project_info_shared': {}  # Track shared project info to avoid repetition
                 }
             else:
                 conversation_state[phone]['history'] = history
@@ -445,13 +455,14 @@ def whatsapp():
                 'no_interest': False,
                 'schedule_next': None,
                 'last_incoming_time': datetime.now().isoformat(),
-                'introduced': False
+                'introduced': False,
+                'project_info_shared': {}
             }
 
         logger.debug("Updating conversation history")
         try:
             conversation_state[phone]['history'].append(f"Cliente: {incoming_msg}")
-            # Increase history limit to 10 messages
+            # Limit history to 10 messages
             conversation_state[phone]['history'] = conversation_state[phone]['history'][-10:]
             logger.debug(f"Updated conversation history: {conversation_state[phone]['history']}")
         except Exception as history_update_e:
@@ -512,11 +523,15 @@ def whatsapp():
 
         logger.debug("Preparing project information")
         project_info = ""
+        mentioned_project = None
         try:
             for project, data in projects_data.items():
+                # Provide minimal project info to start
                 project_info += f"Proyecto: {project}\n"
-                project_info += f"Información: {data}\n"
+                project_info += "Es un desarrollo que creo que te va a interesar.\n"
                 project_info += "\n"
+                if project.lower() in incoming_msg.lower():
+                    mentioned_project = project
             logger.debug(f"Project info prepared: {project_info}")
         except Exception as project_info_e:
             logger.error(f"Error preparing project information: {str(project_info_e)}", exc_info=True)
@@ -604,12 +619,12 @@ def whatsapp():
             try:
                 logger.debug("Generating response with ChatGPT")
                 response = openai_client.chat.completions.create(
-                    model="gpt-4o-mini",
+                    model=CHATGPT_MODEL,  # Use the constant defined at the top
                     messages=[
                         {"role": "system", "content": bot_config.BOT_PERSONALITY},
                         {"role": "user", "content": prompt}
                     ],
-                    max_tokens=150,
+                    max_tokens=50,  # Reduced to enforce shorter responses
                     temperature=0.7
                 )
                 reply = response.choices[0].message.content.strip()
@@ -617,11 +632,11 @@ def whatsapp():
             except Exception as openai_e:
                 logger.error(f"Fallo con OpenAI API: {str(openai_e)}", exc_info=True)
                 if "rate_limit" in str(openai_e).lower() or "insufficient_quota" in str(openai_e).lower():
-                    reply = "Lo siento, estoy teniendo problemas para procesar tu mensaje debido a un límite en mi sistema. Por favor, intenta de nuevo más tarde."
+                    reply = "Lo siento, estoy teniendo problemas para procesar tu mensaje debido a un límite en mi sistema."
                 elif "authentication" in str(openai_e).lower():
-                    reply = "Parece que hay un problema con mi configuración. Por favor, contacta al soporte técnico."
+                    reply = "Parece que hay un problema con mi configuración."
                 else:
-                    reply = "Lo siento, no entiendo bien tu pregunta debido a un error interno. ¿Puedes repetirla de otra forma?"
+                    reply = "Lo siento, no entiendo bien tu pregunta."
 
             logger.debug(f"ChatGPT reply: {reply}")
 
@@ -632,7 +647,7 @@ def whatsapp():
                     continue
                 sentence = sentence.strip()
                 if sentence:
-                    if len(current_message.split('\n')) < 2:
+                    if len(current_message.split('\n')) < 2 and len(current_message) < 50:
                         current_message += (sentence + '. ') if current_message else sentence + '. '
                     else:
                         messages.append(current_message.strip())
@@ -648,18 +663,28 @@ def whatsapp():
             # Check for file requests or location requests
             requested_file = None
             project = None
-            for proj, files in downloadable_files.items():
-                for file in files:
-                    if file.lower() in incoming_msg.lower():
+            for proj in downloadable_urls.keys():
+                for file in downloadable_urls[proj].keys():
+                    # Normalize file name for comparison
+                    normalized_file = file.replace(" ", "").lower()
+                    normalized_msg = incoming_msg.replace(" ", "").lower()
+                    if normalized_file in normalized_msg:
                         requested_file = file
                         project = proj
                         break
                 if requested_file:
                     break
 
+            # Check if the message explicitly requests a file or location
+            explicit_file_request = any(keyword in incoming_msg.lower() for keyword in [
+                "mándame", "envíame", "pásame", "quiero el archivo", "presentación", "especificaciones", "entrega"
+            ])
+            location_request = "ubicación" in incoming_msg.lower() or "location" in incoming_msg.lower() or "google maps" in incoming_msg.lower()
+
             if requested_file and project:
                 try:
                     file_urls = downloadable_urls.get(project, {})
+                    logger.debug(f"File URLs for project {project}: {file_urls}")
                     file_url = file_urls.get(requested_file)
                     if file_url:
                         messages.append(bot_config.FILE_SENT_MESSAGE.format(requested_file=requested_file, file_url=file_url))
@@ -669,7 +694,7 @@ def whatsapp():
                 except Exception as e:
                     logger.error(f"Error al obtener URL del archivo: {str(e)}", exc_info=True)
                     messages.append(bot_config.FILE_ERROR_MESSAGE.format(requested_file=requested_file))
-            elif "ubicación" in incoming_msg.lower() or "location" in incoming_msg.lower() or "google maps" in incoming_msg.lower():
+            elif location_request:
                 # Find the project mentioned in the message or use the first available project
                 mentioned_project = None
                 for proj in downloadable_urls.keys():
@@ -680,12 +705,14 @@ def whatsapp():
                     mentioned_project = list(downloadable_urls.keys())[0]
 
                 if mentioned_project:
-                    file_urls = downloadable_urls.get(mentioned_project, {})
-                    location_url = file_urls.get("Ubicación en Google Maps")
+                    file_urls = readable_urls.get(mentioned_project, {})
+                    location_url = file_urls.get("ubicación en google maps")
                     if location_url:
                         messages.append(bot_config.LOCATION_MESSAGE.format(location_url=location_url))
                     else:
                         messages.append("Lo siento, no tengo la URL de la ubicación para este proyecto.")
+            elif mentioned_project and bot_config.should_offer_files(conversation_state[phone], conversation_history, mentioned_project):
+                messages.append(bot_config.OFFER_FILES_MESSAGE.format(project=mentioned_project))
 
             send_consecutive_messages(phone, messages)
 
