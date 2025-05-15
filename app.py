@@ -36,10 +36,15 @@ app = Flask(__name__)
 logger = logging.getLogger(__name__)
 
 # Initialize Twilio client
-if not TWILIO_ACCOUNT_SID or not TWILIO_AUTH_TOKEN:
-    logger.error("TWILIO_ACCOUNT_SID or TWILIO_AUTH_TOKEN not set in environment variables")
-    raise ValueError("TWILIO_ACCOUNT_SID or TWILIO_AUTH_TOKEN not set")
-client = Client(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
+try:
+    if not TWILIO_ACCOUNT_SID or not TWILIO_AUTH_TOKEN:
+        logger.error("TWILIO_ACCOUNT_SID or TWILIO_AUTH_TOKEN not set in environment variables")
+        raise ValueError("TWILIO_ACCOUNT_SID or TWILIO_AUTH_TOKEN not set")
+    client = Client(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
+    logger.info("Twilio client initialized successfully")
+except Exception as e:
+    logger.error(f"Failed to initialize Twilio client: {str(e)}")
+    sys.exit(1)
 
 # Initialize OpenAI client (will be used in message_handler)
 if not OPENAI_API_KEY:
@@ -48,6 +53,12 @@ if not OPENAI_API_KEY:
 
 # Global conversation state
 conversation_state = {}
+
+# Health check endpoint for Cloud Run
+@app.route('/health', methods=['GET'])
+def health():
+    logger.debug("Health check endpoint called")
+    return "Healthy", 200
 
 # Routes
 @app.route('/whatsapp', methods=['POST'])
@@ -232,7 +243,6 @@ def whatsapp():
                 project_info += "\n"
                 if project.lower() in incoming_msg.lower():
                     conversation_state[phone]['last_mentioned_project'] = project  # Persist the mentioned project
-                    logger.debug(f"Updated last_mentioned_project to: {project}")
             logger.debug(f"Project info prepared: {project_info}")
         except Exception as project_info_e:
             logger.error(f"Error preparing project information: {str(project_info_e)}")
