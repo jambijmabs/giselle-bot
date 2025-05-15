@@ -24,6 +24,7 @@ def initialize_message_handler(openai_api_key, projects_data_ref, downloadable_u
     openai_client = OpenAI(api_key=openai_api_key)
     projects_data = projects_data_ref
     downloadable_urls = downloadable_urls_ref
+    logger.debug(f"Downloadable URLs after initialization: {downloadable_urls}")
     extract_project_details()
 
 def extract_project_details():
@@ -91,16 +92,33 @@ def process_message(incoming_msg, phone, conversation_state, project_info, conve
         normalized_msg = incoming_msg.lower().replace(" ", "")
         logger.debug(f"Normalized message: {normalized_msg}")
 
-        # Find the mentioned project
-        for project in projects_data.keys():
-            if project.lower() in normalized_msg:
-                mentioned_project = project
-                break
+        # Retrieve the last mentioned project from conversation state
+        mentioned_project = conversation_state[phone].get('last_mentioned_project')
+        logger.debug(f"Last mentioned project from state: {mentioned_project}")
+
+        # If no previous project, look for a project in the current message
+        if not mentioned_project:
+            for project in projects_data.keys():
+                if project.lower() in normalized_msg:
+                    mentioned_project = project
+                    break
+        # If still no project, check the conversation history for a mentioned project
+        if not mentioned_project:
+            for msg in conversation_history:
+                for project in projects_data.keys():
+                    if project.lower() in msg.lower():
+                        mentioned_project = project
+                        break
+                if mentioned_project:
+                    break
+        # If no project is found, default to the first project
         if not mentioned_project:
             mentioned_project = list(projects_data.keys())[0] if projects_data else None
         logger.debug(f"Mentioned project: {mentioned_project}")
 
         client_name = conversation_state[phone].get('client_name', 'Cliente')
+        if not client_name:  # Ensure client_name is not None
+            client_name = 'Cliente'
         logger.debug(f"Client name: {client_name}")
 
         # Check for price requests
@@ -108,6 +126,7 @@ def process_message(incoming_msg, phone, conversation_state, project_info, conve
             logger.debug("Detected price request")
             if mentioned_project and mentioned_project in project_details:
                 prices = project_details[mentioned_project]['prices']
+                logger.debug(f"Prices for {mentioned_project}: {prices}")
                 if prices:
                     messages.append(f"¡Hola {client_name}! Te comparto con gusto los precios de las unidades disponibles en {mentioned_project}:")
                     for price_info in prices:
@@ -118,6 +137,10 @@ def process_message(incoming_msg, phone, conversation_state, project_info, conve
                     messages.append(f"Lo siento, {client_name}, no tengo información de precios para {mentioned_project} en este momento.")
                     messages.append("¿Te gustaría que te envíe el documento con más detalles del proyecto?")
                     return messages, mentioned_project
+            else:
+                messages.append(f"Lo siento, {client_name}, no tengo información disponible para ese proyecto.")
+                messages.append("¿Te gustaría saber de otro proyecto?")
+                return messages, mentioned_project
 
         # Check for payment plans/forms requests
         if any(keyword in normalized_msg for keyword in ["plan de pago", "forma de pago", "pago"]):
@@ -134,6 +157,10 @@ def process_message(incoming_msg, phone, conversation_state, project_info, conve
                     messages.append(f"Lo siento, {client_name}, no tengo información de planes de pago para {mentioned_project} en este momento.")
                     messages.append("¿Te gustaría que te envíe el documento con más detalles del proyecto?")
                     return messages, mentioned_project
+            else:
+                messages.append(f"Lo siento, {client_name}, no tengo información disponible para ese proyecto.")
+                messages.append("¿Te gustaría saber de otro proyecto?")
+                return messages, mentioned_project
 
         # Check for discounts requests
         if "descuento" in normalized_msg:
@@ -150,6 +177,10 @@ def process_message(incoming_msg, phone, conversation_state, project_info, conve
                     messages.append(f"Lo siento, {client_name}, no tengo información de descuentos para {mentioned_project} en este momento.")
                     messages.append("¿Te gustaría que te envíe el documento con más detalles del proyecto?")
                     return messages, mentioned_project
+            else:
+                messages.append(f"Lo siento, {client_name}, no tengo información disponible para ese proyecto.")
+                messages.append("¿Te gustaría saber de otro proyecto?")
+                return messages, mentioned_project
 
         # Check for file requests or location requests
         requested_file = None
@@ -198,7 +229,8 @@ def process_message(incoming_msg, phone, conversation_state, project_info, conve
                 messages.append(f"{file_url}")
                 messages.append("Si tienes alguna pregunta sobre el documento o quieres saber más del proyecto, estaré encantada de ayudarte.")
             else:
-                messages.append(bot_config.FILE_ERROR_MESSAGE.format(requested_file=requested_file))
+                messages.append(f"Lo siento, {client_name}, no encontré el archivo '{requested_file}' para {mentioned_project}.")
+                messages.append("¿Hay otro archivo o información que te gustaría que te proporcione?")
             return messages, mentioned_project
         elif location_request:
             logger.debug("Detected location request")
