@@ -3,14 +3,21 @@ import logging
 import sys
 from flask import Flask, request
 from twilio.rest import Client
-from openai import OpenAI
-from google.cloud import storage
-import json
+from datetime import datetime, timedelta
+import bot_config
+import utils
+import message_handler
 
 # Configuration Section
 WHATSAPP_SENDER_NUMBER = "whatsapp:+18188732305"
+TWILIO_ACCOUNT_SID = os.getenv('TWILIO_ACCOUNT_SID')
+TWILIO_AUTH_TOKEN = os.getenv('TWILIO_AUTH_TOKEN')
+OPENAI_API_KEY = os.getenv('OPENAI_API_KEY')
 GCS_BUCKET_NAME = "giselle-projects"
 GCS_BASE_PATH = "PROYECTOS"
+GCS_CONVERSATIONS_PATH = "CONVERSATIONS"
+STATE_FILE = "conversation_state.json"
+DEFAULT_PORT = 8080
 
 # Configure logging
 logging.basicConfig(
@@ -30,8 +37,6 @@ logger = logging.getLogger(__name__)
 
 # Initialize Twilio client
 client = None
-TWILIO_ACCOUNT_SID = os.getenv('TWILIO_ACCOUNT_SID')
-TWILIO_AUTH_TOKEN = os.getenv('TWILIO_AUTH_TOKEN')
 try:
     if not TWILIO_ACCOUNT_SID or not TWILIO_AUTH_TOKEN:
         logger.warning("TWILIO_ACCOUNT_SID or TWILIO_AUTH_TOKEN not set in environment variables. Twilio client will not be initialized.")
@@ -42,87 +47,12 @@ except Exception as e:
     logger.error(f"Failed to initialize Twilio client: {str(e)}")
     client = None
 
-# Initialize OpenAI client
-OPENAI_API_KEY = os.getenv('OPENAI_API_KEY')
+# Initialize OpenAI client (will be used in message_handler)
 if not OPENAI_API_KEY:
     logger.warning("OPENAI_API_KEY not set in environment variables. Some functionality may not work.")
-openai_client = OpenAI(api_key=OPENAI_API_KEY) if OPENAI_API_KEY else None
-
-# Initialize Google Cloud Storage client
-try:
-    storage_client = storage.Client()
-except Exception as e:
-    logger.error(f"Error initializing Google Cloud Storage client: {str(e)}")
-    storage_client = None
-
-# Global project data
-projects_data = {}
 
 # Global conversation state
 conversation_state = {}
-
-# Download project files from GCS
-def download_projects_from_storage(bucket_name, base_path):
-    try:
-        if not os.path.exists(base_path):
-            os.makedirs(base_path)
-            logger.debug(f"Created directory {base_path}")
-
-        bucket = storage_client.bucket(bucket_name)
-        blobs = bucket.list_blobs(prefix=base_path)
-
-        for blob in blobs:
-            local_path = blob.name
-            if not os.path.exists(os.path.dirname(local_path)):
-                os.makedirs(os.path.dirname(local_path))
-            blob.download_to_filename(local_path)
-            logger.info(f"Descargado archivo desde Cloud Storage: {local_path}")
-    except Exception as e:
-        logger.error(f"Error downloading projects from Cloud Storage: {str(e)}")
-        raise
-
-# Extract text from .txt files
-def extract_text_from_txt(txt_path):
-    try:
-        with open(txt_path, 'r', encoding='utf-8') as file:
-            text = file.read()
-        logger.info(f"Archivo de texto {txt_path} leído correctamente.")
-        return text
-    except Exception as e:
-        logger.error(f"Error al leer archivo de texto {txt_path}: {str(e)}")
-        return ""
-
-# Load project data from folder
-def load_projects_from_folder(base_path):
-    global projects_data
-    projects_data = {}
-
-    if not os.path.exists(base_path):
-        os.makedirs(base_path)
-        logger.warning(f"Carpeta {base_path} creada, pero no hay proyectos.")
-        return
-
-    projects = [d for d in os.listdir(base_path) if os.path.isdir(os.path.join(base_path, d)) and not d.startswith('.')]
-    if not projects:
-        logger.warning(f"No se encontraron proyectos en {base_path}.")
-        return
-
-    logger.info(f"Proyectos detectados: {', '.join(projects)}")
-
-    for project in projects:
-        project_path = os.path.join(base_path, project)
-        project_file = f"{project}.txt"
-        file_path = os.path.join(project_path, project_file)
-
-        if os.path.isfile(file_path):
-            logger.info(f"Procesando archivo de texto para {project}: {file_path}")
-            text = extract_text_from_txt(file_path)
-            if text:
-                projects_data[project] = text
-                logger.info(f"Proyecto {project} procesado correctamente desde {file_path}.")
-                logger.debug(f"Contenido de {project_file}:\n{text}")
-        else:
-            logger.warning(f"No se encontró el archivo {project_file} para el proyecto {project}.")
 
 # Health check endpoint for Cloud Run
 @app.route('/health', methods=['GET'])
@@ -130,7 +60,7 @@ def health():
     logger.debug("Health check endpoint called")
     return "Healthy", 200
 
-# Main WhatsApp route
+# Routes
 @app.route('/whatsapp', methods=['POST'])
 def whatsapp():
     logger.debug("Entered /whatsapp route")
@@ -139,10 +69,7 @@ def whatsapp():
             logger.error("Twilio client not initialized. Cannot process WhatsApp messages.")
             return "Error: Twilio client not initialized", 500
 
-        if openai_client is None:
-            logger.error("OpenAI client not initialized. Cannot process messages.")
-            return "Error: OpenAI client not initialized", 500
-
+        # Log the entire request data for debugging
         logger.debug(f"Request headers: {dict(request.headers)}")
         logger.debug(f"Request form data: {request.form}")
         logger.debug(f"Request values: {dict(request.values)}")
@@ -151,59 +78,22 @@ def whatsapp():
         num_media = int(request.values.get('NumMedia', '0'))
         phone = request.values.get('From', '')
 
+        # Check if the message contains audio
         if num_media > 0:
             media_url = request.values.get('MediaUrl0', '')
             media_content_type = request.values.get('MediaContentType0', '')
             logger.debug(f"Media detected: URL={media_url}, Content-Type={media_content_type}")
 
             if 'audio' in media_content_type:
-                audio_response = requests.get(media_url, auth=(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN))
-                if audio_response.status_code != 200:
-                    logger.error(f"Failed to download audio: {audio_response.status_code}")
-                    messages = ["Lo siento, no pude procesar tu mensaje de audio. ¿Puedes enviarlo como texto?"]
-                    for msg in messages:
-                        client.messages.create(
-                            from_=WHATSAPP_SENDER_NUMBER,
-                            body=msg,
-                            to=phone
-                        )
+                messages, incoming_msg = message_handler.handle_audio_message(
+                    media_url, phone, TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN
+                )
+                if messages:
+                    utils.send_consecutive_messages(phone, messages, client, WHATSAPP_SENDER_NUMBER)
                     return "Mensaje enviado"
-
-                audio_file_path = f"/tmp/audio_{phone.replace(':', '_')}.ogg"
-                with open(audio_file_path, 'wb') as f:
-                    f.write(audio_response.content)
-                logger.debug(f"Audio saved to {audio_file_path}")
-
-                try:
-                    with open(audio_file_path, 'rb') as audio_file:
-                        transcription = openai_client.audio.transcriptions.create(
-                            model="whisper-1",
-                            file=audio_file,
-                            language="es"
-                        )
-                    incoming_msg = transcription.text.strip()
-                    logger.info(f"Audio transcribed: {incoming_msg}")
-                except Exception as e:
-                    logger.error(f"Error transcribing audio: {str(e)}")
-                    messages = ["Lo siento, no pude entender tu mensaje de audio. ¿Puedes intentarlo de nuevo o escribirlo como texto?"]
-                    for msg in messages:
-                        client.messages.create(
-                            from_=WHATSAPP_SENDER_NUMBER,
-                            body=msg,
-                            to=phone
-                        )
-                    return "Mensaje enviado"
-                finally:
-                    if os.path.exists(audio_file_path):
-                        os.remove(audio_file_path)
             else:
                 messages = ["Lo siento, solo puedo procesar mensajes de texto o audio. ¿Puedes enviar tu mensaje de otra forma?"]
-                for msg in messages:
-                    client.messages.create(
-                        from_=WHATSAPP_SENDER_NUMBER,
-                        body=msg,
-                        to=phone
-                    )
+                utils.send_consecutive_messages(phone, messages, client, WHATSAPP_SENDER_NUMBER)
                 return "Mensaje enviado"
         else:
             incoming_msg = request.values.get('Body', '').strip()
@@ -228,82 +118,196 @@ def whatsapp():
 
         logger.info(f"Mensaje recibido de {phone}: {incoming_msg}")
 
-        # Initialize conversation state for the phone number
-        if phone not in conversation_state:
+        # Load conversation history with error handling
+        try:
+            history = utils.load_conversation_history(phone, GCS_BUCKET_NAME, GCS_CONVERSATIONS_PATH)
+            logger.debug(f"Conversation history loaded: {history}")
+        except Exception as e:
+            logger.error(f"Failed to load conversation history: {str(e)}")
+            history = []  # Proceed with an empty history to avoid failing the entire request
+
+        # Initialize conversation state with error handling
+        try:
+            if phone not in conversation_state:
+                conversation_state[phone] = {
+                    'history': history,
+                    'name_asked': 0,
+                    'budget_asked': 0,
+                    'contact_time_asked': 0,
+                    'messages_since_budget_ask': 0,
+                    'messages_without_response': 0,
+                    'preferred_time': None,
+                    'preferred_days': None,
+                    'client_name': None,
+                    'client_budget': None,
+                    'last_contact': datetime.now().isoformat(),
+                    'recontact_attempts': 0,
+                    'no_interest': False,
+                    'schedule_next': None,
+                    'last_incoming_time': datetime.now().isoformat(),
+                    'introduced': False,
+                    'project_info_shared': {},
+                    'last_mentioned_project': None  # New field to persist mentioned project
+                }
+            else:
+                conversation_state[phone]['history'] = history
+                conversation_state[phone]['messages_without_response'] = 0
+                conversation_state[phone]['last_incoming_time'] = datetime.now().isoformat()
+        except Exception as e:
+            logger.error(f"Error initializing conversation state: {str(e)}")
             conversation_state[phone] = {
                 'history': [],
-                'last_message_time': datetime.now().isoformat()
+                'name_asked': 0,
+                'budget_asked': 0,
+                'contact_time_asked': 0,
+                'messages_since_budget_ask': 0,
+                'messages_without_response': 0,
+                'preferred_time': None,
+                'preferred_days': None,
+                'client_name': None,
+                'client_budget': None,
+                'last_contact': datetime.now().isoformat(),
+                'recontact_attempts': 0,
+                'no_interest': False,
+                'schedule_next': None,
+                'last_incoming_time': datetime.now().isoformat(),
+                'introduced': False,
+                'project_info_shared': {},
+                'last_mentioned_project': None
             }
 
-        # Add incoming message to history
         conversation_state[phone]['history'].append(f"Cliente: {incoming_msg}")
         conversation_state[phone]['history'] = conversation_state[phone]['history'][-10:]
-        conversation_state[phone]['last_message_time'] = datetime.now().isoformat()
+        conversation_state[phone]['last_contact'] = datetime.now().isoformat()
+        conversation_state[phone]['messages_since_budget_ask'] += 1
 
-        # Build project information prompt
+        # Check for client name in the message
+        if "mi nombre es" in incoming_msg.lower():
+            name = incoming_msg.lower().split("mi nombre es")[-1].strip()
+            conversation_state[phone]['client_name'] = name.capitalize()
+            logger.info(f"Client name set to: {conversation_state[phone]['client_name']}")
+            utils.save_client_info(phone, conversation_state, GCS_BUCKET_NAME, GCS_CONVERSATIONS_PATH)
+        elif conversation_state[phone].get('name_asked', 0) > 0 and not conversation_state[phone].get('client_name'):
+            name = incoming_msg.strip()
+            if name and name.lower() != 'hola':  # Prevent setting 'hola' as the name
+                conversation_state[phone]['client_name'] = name.capitalize()
+                logger.info(f"Client name set to: {conversation_state[phone]['client_name']}")
+                utils.save_client_info(phone, conversation_state, GCS_BUCKET_NAME, GCS_CONVERSATIONS_PATH)
+
+        # Check for client budget in the message
+        if "mi presupuesto es" in incoming_msg.lower() or "presupuesto de" in incoming_msg.lower():
+            budget = incoming_msg.lower().split("presupuesto")[-1].strip()
+            conversation_state[phone]['client_budget'] = budget
+            logger.info(f"Client budget set to: {budget}")
+            utils.save_client_info(phone, conversation_state, GCS_BUCKET_NAME, GCS_CONVERSATIONS_PATH)
+
+        # Check for preferred days and time in the message
+        if "prefiero ser contactado" in incoming_msg.lower() or "horario" in incoming_msg.lower():
+            if "prefiero ser contactado" in incoming_msg.lower():
+                days = incoming_msg.lower().split("prefiero ser contactado")[-1].strip()
+                conversation_state[phone]['preferred_days'] = days
+                logger.info(f"Preferred days set to: {days}")
+            if "horario" in incoming_msg.lower():
+                time = incoming_msg.lower().split("horario")[-1].strip()
+                conversation_state[phone]['preferred_time'] = time
+                logger.info(f"Preferred time set to: {time}")
+            utils.save_client_info(phone, conversation_state, GCS_BUCKET_NAME, GCS_CONVERSATIONS_PATH)
+
+        # Check for no-interest phrases
+        if any(phrase in incoming_msg.lower() for phrase in bot_config.NO_INTEREST_PHRASES):
+            conversation_state[phone]['no_interest'] = True
+            messages = bot_config.handle_no_interest_response()
+            logger.info(f"Sending no-interest response: {messages}")
+            utils.send_consecutive_messages(phone, messages, client, WHATSAPP_SENDER_NUMBER)
+            conversation_state[phone]['history'].append(f"Giselle: {messages[0]}")
+            utils.save_conversation_state(conversation_state, GCS_BUCKET_NAME, GCS_CONVERSATIONS_PATH)
+            utils.save_conversation_history(phone, conversation_state[phone]['history'], GCS_BUCKET_NAME, GCS_CONVERSATIONS_PATH)
+            utils.save_client_info(phone, conversation_state, GCS_BUCKET_NAME, GCS_CONVERSATIONS_PATH)
+            return "Mensaje enviado"
+
+        # Check for recontact request
+        recontact_response = bot_config.handle_recontact_request(incoming_msg, conversation_state[phone])
+        if recontact_response:
+            messages = recontact_response
+            logger.info(f"Sending recontact response: {messages}")
+            utils.send_consecutive_messages(phone, messages, client, WHATSAPP_SENDER_NUMBER)
+            conversation_state[phone]['history'].append(f"Giselle: {messages[0]}")
+            utils.save_conversation_state(conversation_state, GCS_BUCKET_NAME, GCS_CONVERSATIONS_PATH)
+            utils.save_conversation_history(phone, conversation_state[phone]['history'], GCS_BUCKET_NAME, GCS_CONVERSATIONS_PATH)
+            utils.save_client_info(phone, conversation_state, GCS_BUCKET_NAME, GCS_CONVERSATIONS_PATH)
+            return "Mensaje enviado"
+
+        # Prepare project information
         project_info = ""
-        mentioned_project = None
-        for project, data in projects_data.items():
-            project_info += f"Proyecto: {project}\n{data}\n\n"
-            if project.lower() in incoming_msg.lower():
-                mentioned_project = project
+        try:
+            for project, data in utils.projects_data.items():
+                project_info += f"Proyecto: {project}\n"
+                project_info += "Es un desarrollo que creo que te va a interesar.\n"
+                project_info += "\n"
+                if project.lower() in incoming_msg.lower():
+                    conversation_state[phone]['last_mentioned_project'] = project
+        except Exception as project_info_e:
+            logger.error(f"Error preparing project information: {str(project_info_e)}")
+            project_info = "Información de proyectos no disponible."
 
-        # Build conversation history prompt
+        # Build conversation history
         conversation_history = "\n".join(conversation_state[phone]['history'])
 
-        # Prepare prompt for OpenAI
-        prompt = (
-            "Eres Giselle, una asesora de ventas de FAV Living, una empresa inmobiliaria. "
-            "Tu objetivo es vender propiedades inmobiliarias de manera natural e improvisada, como lo haría una vendedora real. "
-            "Actúa de forma fluida, profesional y cercana, como si estuvieras charlando con un amigo. "
-            "No des demasiada información de una vez; suelta los detalles poco a poco para mantener el interés del cliente. "
-            "Usa un lenguaje que despierte curiosidad, como 'un proyecto que creo que te va a encantar' o 'una ubicación que te sorprenderá'. "
-            "Responde únicamente basándote en la información de los proyectos que tienes disponible, sin inventar información adicional. "
-            "Si el cliente hace una pregunta y no tienes la información exacta para responder, di algo como 'No sé exactamente, pero déjame investigarlo' "
-            "y continúa la conversación de manera natural. "
-            "No uses emoticones ni compartas información personal sobre ti más allá de tu rol en FAV Living.\n\n"
-            "Información de los proyectos disponibles:\n"
-            f"{project_info}\n\n"
-            "Historial de conversación:\n"
-            f"{conversation_history}\n\n"
-            "Mensaje del cliente: '{incoming_msg}'\n\n"
-            "Responde de forma breve y profesional, enfocándote en la venta de propiedades. Improvisa de manera natural."
-        )
-
-        # Generate response using OpenAI
+        # Process the message and generate a response
         try:
-            response = openai_client.chat.completions.create(
-                model="gpt-4.1-mini",
-                messages=[
-                    {"role": "system", "content": "Eres Giselle, una asesora de ventas de FAV Living."},
-                    {"role": "user", "content": prompt}
-                ],
-                max_tokens=150,
-                temperature=0.7
+            # Ensure name_asked is set when GISELLE sends the initial intro
+            if not conversation_state[phone].get('introduced', False):
+                conversation_state[phone]['name_asked'] = 1  # Set name_asked when asking for name
+            messages, mentioned_project = message_handler.process_message(
+                incoming_msg, phone, conversation_state, project_info, conversation_history
             )
-            reply = response.choices[0].message.content.strip()
+            logger.debug(f"Messages generated: {messages}")
+            logger.debug(f"Mentioned project after processing: {mentioned_project}")
         except Exception as e:
-            logger.error(f"Error generating response with OpenAI: {str(e)}")
-            reply = "Lo siento, ocurrió un error al procesar tu mensaje. ¿En qué más puedo ayudarte?"
+            logger.error(f"Error processing message: {str(e)}")
+            messages = ["Lo siento, ocurrió un error al procesar tu mensaje. ¿En qué más puedo ayudarte?"]
+            mentioned_project = None
 
-        # Send response
-        messages = reply.split('\n')  # Split into multiple messages if needed
+        # Update the last mentioned project in conversation state
+        if mentioned_project:
+            conversation_state[phone]['last_mentioned_project'] = mentioned_project
+            logger.debug(f"Updated last_mentioned_project to: {mentioned_project}")
+
+        utils.send_consecutive_messages(phone, messages, client, WHATSAPP_SENDER_NUMBER)
+
         for msg in messages:
-            if msg.strip():
-                client.messages.create(
-                    from_=WHATSAPP_SENDER_NUMBER,
-                    body=msg.strip(),
-                    to=phone
-                )
-
-        # Add response to history
-        conversation_state[phone]['history'].append(f"Giselle: {reply}")
+            conversation_state[phone]['history'].append(f"Giselle: {msg}")
         conversation_state[phone]['history'] = conversation_state[phone]['history'][-10:]
+
+        utils.save_conversation_state(conversation_state, GCS_BUCKET_NAME, GCS_CONVERSATIONS_PATH)
+        utils.save_conversation_history(phone, conversation_state[phone]['history'], GCS_BUCKET_NAME, GCS_CONVERSATIONS_PATH)
+        utils.save_client_info(phone, conversation_state, GCS_BUCKET_NAME, GCS_CONVERSATIONS_PATH)
 
         logger.debug("Returning success response")
         return "Mensaje enviado"
     except Exception as e:
         logger.error(f"Error inesperado en /whatsapp: {str(e)}", exc_info=True)
+        try:
+            phone = phone.strip()
+            if not phone.startswith('whatsapp:+'):
+                phone = phone.replace('whatsapp:', '').strip()
+                phone = f"whatsapp:+{phone.replace(' ', '')}"
+            logger.debug(f"Phone number in exception handler: {repr(phone)}")
+            if not phone.startswith('whatsapp:+'):
+                logger.error(f"Invalid phone number format in exception handler: {repr(phone)}")
+                return "Error: Invalid phone number format in exception handler", 400
+            message = client.messages.create(
+                from_=WHATSAPP_SENDER_NUMBER,
+                body="Lo siento, ocurrió un error. ¿En qué más puedo ayudarte?",
+                to=phone
+            )
+            logger.info(f"Fallback message sent: SID {message.sid}, Estado: {message.status}")
+            conversation_state[phone]['history'].append("Giselle: Lo siento, ocurrió un error. ¿En qué más puedo ayudarte?")
+            utils.save_conversation_state(conversation_state, GCS_BUCKET_NAME, GCS_CONVERSATIONS_PATH)
+            utils.save_conversation_history(phone, conversation_state[phone]['history'], GCS_BUCKET_NAME, GCS_CONVERSATIONS_PATH)
+            utils.save_client_info(phone, conversation_state, GCS_BUCKET_NAME, GCS_CONVERSATIONS_PATH)
+        except Exception as twilio_e:
+            logger.error(f"Error sending fallback message: {str(twilio_e)}")
         return "Error interno del servidor", 500
 
 @app.route('/', methods=['GET'])
@@ -316,21 +320,42 @@ def test():
     logger.debug("Solicitud GET recibida en /test")
     return "Servidor Flask está funcionando correctamente!"
 
+@app.route('/schedule_recontact', methods=['GET'])
+def trigger_recontact():
+    logger.info("Triggering recontact scheduling")
+    current_time = datetime.now()
+    for phone, state in list(conversation_state.items()):
+        messages, should_update = bot_config.handle_recontact(phone, state, current_time)
+        if messages:
+            utils.send_consecutive_messages(phone, messages, client, WHATSAPP_SENDER_NUMBER)
+            for msg in messages:
+                conversation_state[phone]['history'].append(f"Giselle: {msg}")
+            utils.save_conversation_state(conversation_state, GCS_BUCKET_NAME, GCS_CONVERSATIONS_PATH)
+            utils.save_conversation_history(phone, conversation_state[phone]['history'], GCS_BUCKET_NAME, GCS_CONVERSATIONS_PATH)
+            utils.save_client_info(phone, conversation_state, GCS_BUCKET_NAME, GCS_CONVERSATIONS_PATH)
+    return "Recontact scheduling triggered"
+
 # Application Startup
 if __name__ == '__main__':
     try:
         logger.info("Starting application initialization...")
-        download_projects_from_storage(GCS_BUCKET_NAME, GCS_BASE_PATH)
+        utils.load_conversation_state(conversation_state, GCS_BUCKET_NAME, GCS_CONVERSATIONS_PATH)
+        logger.info("Conversation state loaded")
+        utils.download_projects_from_storage(GCS_BUCKET_NAME, GCS_BASE_PATH)
         logger.info("Projects downloaded from storage")
-        load_projects_from_folder(GCS_BASE_PATH)
+        utils.load_projects_from_folder(GCS_BASE_PATH)
         logger.info("Projects loaded from folder")
-        port = int(os.getenv("PORT", 8080))
+        message_handler.initialize_message_handler(
+            OPENAI_API_KEY, utils.projects_data, utils.downloadable_urls
+        )
+        logger.info("Message handler initialized")
+        port = int(os.getenv("PORT", DEFAULT_PORT))
         service_url = os.getenv("SERVICE_URL", f"https://giselle-bot-250207106980.us-central1.run.app")
         logger.info(f"Puerto del servidor: {port}")
         logger.info(f"URL del servicio: {service_url}")
         logger.info(f"Configura el webhook en Twilio con: {service_url}/whatsapp")
         logger.info("Iniciando servidor Flask...")
-        app.run(host='0.0.0.0', port=port, debug=False)
+        app.run(host='0.0.0.0', port=port, debug=False)  # Disable debug mode for production
         logger.info(f"Servidor Flask iniciado en el puerto {port}.")
     except Exception as e:
         logger.error(f"Failed to start application: {str(e)}")
