@@ -24,7 +24,7 @@ STATE_FILE = "conversation_state.json"
 DEFAULT_PORT = 8080
 WHATSAPP_TEMPLATE_SID = "HX1234567890abcdef1234567890abcdef"
 WHATSAPP_TEMPLATE_VARIABLES = {"1": "Cliente"}
-CHATGPT_MODEL = "gpt-4.1-mini"  # Define the ChatGPT model here
+CHATGPT_MODEL = "gpt-4o-mini"  # Define the ChatGPT model here
 
 # Configure logging
 logging.basicConfig(
