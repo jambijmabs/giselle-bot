@@ -56,20 +56,35 @@ def download_from_gcs(bucket_name, source_blob_name, destination_file_path):
         logger.error(f"Error downloading from GCS: {str(e)}")
         return False
 
-def load_conversation_state(conversation_state, gcs_bucket_name, gcs_conversations_path):
-    """Load conversation state from file in GCS."""
-    try:
-        local_state_file = "/tmp/conversation_state.json"
-        destination_blob_name = os.path.join(gcs_conversations_path, "conversation_state.json")
-        if download_from_gcs(gcs_bucket_name, destination_blob_name, local_state_file):
-            with open(local_state_file, 'r') as f:
-                conversation_state.update(json.load(f))
-            logger.info("Conversation state loaded from GCS")
-        else:
-            logger.info("No conversation state file found in GCS; starting fresh")
-    except Exception as e:
-        logger.error(f"Error loading conversation state: {str(e)}")
-        conversation_state.clear()
+def load_projects_from_folder(base_path):
+    global projects_data, downloadable_urls
+    downloadable_urls = {}
+    projects_data = {}
+
+    projects = [d for d in os.listdir(base_path) if os.path.isdir(os.path.join(base_path, d))]
+    for project in projects:
+        project_path = os.path.join(base_path, project)
+        project_file = os.path.join(project_path, f"{project}.txt")
+        
+        if os.path.isfile(project_file):
+            with open(project_file, 'r', encoding='utf-8') as f:
+                text = f.read()
+            projects_data[project] = text
+            downloadable_urls[project] = {}
+            
+            lines = text.split('\n')
+            in_urls_section = False
+            for line in lines:
+                line = line.strip()
+                if line.startswith('Archivos Descargables:'):
+                    in_urls_section = True
+                    continue
+                if in_urls_section and ':' in line:
+                    key, url = line.split(':', 1)
+                    key = key.strip().lower()
+                    url = url.strip().strip('"')
+                    downloadable_urls[project][key] = url
+                    logger.debug(f"Loaded URL: {project} - {key}: {url}")
 
 def save_conversation_state(conversation_state, gcs_bucket_name, gcs_conversations_path):
     """Save conversation state to file in GCS."""
