@@ -19,6 +19,7 @@ TWILIO_AUTH_TOKEN = os.getenv('TWILIO_AUTH_TOKEN')
 OPENAI_API_KEY = os.getenv('OPENAI_API_KEY')
 GCS_BUCKET_NAME = "giselle-projects"
 GCS_BASE_PATH = "PROYECTOS"
+GCS_CONVERSATIONS_PATH = "CONVERSATIONS"
 STATE_FILE = "conversation_state.json"
 DEFAULT_PORT = 8080
 WHATSAPP_TEMPLATE_SID = "HX1234567890abcdef1234567890abcdef"
@@ -58,6 +59,7 @@ storage_client = storage.Client()
 # Global dictionaries for project data and conversation state
 projects_data = {}
 downloadable_links = {}
+downloadable_urls = {}  # New dictionary for URLs from DESCARGABLES.TXT
 conversation_state = {}
 downloadable_files = {}
 
@@ -70,38 +72,65 @@ def get_client_info_filename(phone):
     """Generate the filename for client info based on phone number."""
     return f"client_info_{phone.replace('+', '').replace(':', '_')}.txt"
 
+def upload_to_gcs(bucket_name, source_file_path, destination_blob_name):
+    """Upload a file to Google Cloud Storage."""
+    bucket = storage_client.bucket(bucket_name)
+    blob = bucket.blob(destination_blob_name)
+    blob.upload_from_filename(source_file_path)
+    logger.info(f"Uploaded {source_file_path} to GCS as {destination_blob_name}")
+
+def download_from_gcs(bucket_name, source_blob_name, destination_file_path):
+    """Download a file from Google Cloud Storage."""
+    bucket = storage_client.bucket(bucket_name)
+    blob = bucket.blob(source_blob_name)
+    blob.download_to_filename(destination_file_path)
+    logger.info(f"Downloaded {source_blob_name} from GCS to {destination_file_path}")
+
 def load_conversation_state():
-    """Load conversation state from file."""
+    """Load conversation state from file in GCS."""
     global conversation_state
     try:
-        if os.path.exists(STATE_FILE):
-            with open(STATE_FILE, 'r') as f:
+        local_state_file = "/tmp/conversation_state.json"
+        destination_blob_name = os.path.join(GCS_CONVERSATIONS_PATH, "conversation_state.json")
+        bucket = storage_client.bucket(GCS_BUCKET_NAME)
+        blob = bucket.blob(destination_blob_name)
+        if blob.exists():
+            blob.download_to_filename(local_state_file)
+            with open(local_state_file, 'r') as f:
                 conversation_state = json.load(f)
-            logger.info("Conversation state loaded from file")
+            logger.info("Conversation state loaded from GCS")
         else:
             conversation_state = {}
-            logger.info("No conversation state file found; starting fresh")
+            logger.info("No conversation state file found in GCS; starting fresh")
     except Exception as e:
         logger.error(f"Error loading conversation state: {str(e)}")
         conversation_state = {}
 
 def save_conversation_state():
-    """Save conversation state to file."""
+    """Save conversation state to file in GCS."""
     try:
-        with open(STATE_FILE, 'w') as f:
+        local_state_file = "/tmp/conversation_state.json"
+        destination_blob_name = os.path.join(GCS_CONVERSATIONS_PATH, "conversation_state.json")
+        with open(local_state_file, 'w') as f:
             json.dump(conversation_state, f)
-        logger.info("Conversation state saved to file")
+        upload_to_gcs(GCS_BUCKET_NAME, local_state_file, destination_blob_name)
+        logger.info("Conversation state saved to GCS")
     except Exception as e:
         logger.error(f"Error saving conversation state: {str(e)}")
 
 def load_conversation_history(phone):
-    """Load conversation history from file."""
+    """Load conversation history from file in GCS."""
     filename = get_conversation_history_filename(phone)
+    destination_blob_name = os.path.join(GCS_CONVERSATIONS_PATH, filename)
+    local_file_path = f"/tmp/{filename}"
     try:
-        if os.path.exists(filename):
-            with open(filename, 'r', encoding='utf-8') as f:
+        bucket = storage_client.bucket(GCS_BUCKET_NAME)
+        blob = bucket.blob(destination_blob_name)
+        if blob.exists():
+            blob.download_to_filename(local_file_path)
+            with open(local_file_path, 'r', encoding='utf-8') as f:
                 history = f.read().strip().split('\n')
-            logger.info(f"Loaded conversation history for {phone}")
+            logger.info(f"Loaded conversation history for {phone} from GCS")
             return history
         return []
     except Exception as e:
@@ -109,19 +138,24 @@ def load_conversation_history(phone):
         return []
 
 def save_conversation_history(phone, history):
-    """Save conversation history to file."""
+    """Save conversation history to file in GCS."""
     filename = get_conversation_history_filename(phone)
+    destination_blob_name = os.path.join(GCS_CONVERSATIONS_PATH, filename)
+    local_file_path = f"/tmp/{filename}"
     try:
-        with open(filename, 'w', encoding='utf-8') as f:
+        with open(local_file_path, 'w', encoding='utf-8') as f:
             for msg in history:
                 f.write(f"{msg}\n")
-        logger.info(f"Saved conversation history for {phone}")
+        upload_to_gcs(GCS_BUCKET_NAME, local_file_path, destination_blob_name)
+        logger.info(f"Saved conversation history for {phone} to GCS")
     except Exception as e:
         logger.error(f"Error saving conversation history for {phone}: {str(e)}")
 
 def save_client_info(phone):
-    """Save client information to a text file."""
+    """Save client information to a text file in GCS."""
     filename = get_client_info_filename(phone)
+    destination_blob_name = os.path.join(GCS_CONVERSATIONS_PATH, filename)
+    local_file_path = f"/tmp/{filename}"
     try:
         client_info = conversation_state.get(phone, {})
         name = client_info.get('client_name', 'No proporcionado')
@@ -129,13 +163,14 @@ def save_client_info(phone):
         preferred_days = client_info.get('preferred_days', 'No proporcionado')
         preferred_time = client_info.get('preferred_time', 'No proporcionado')
         
-        with open(filename, 'w', encoding='utf-8') as f:
+        with open(local_file_path, 'w', encoding='utf-8') as f:
             f.write(f"Información del Cliente: {phone}\n")
             f.write(f"Nombre: {name}\n")
             f.write(f"Presupuesto: {budget}\n")
             f.write(f"Días Preferidos: {preferred_days}\n")
             f.write(f"Horario Preferido: {preferred_time}\n")
-        logger.info(f"Saved client info for {phone} to {filename}")
+        upload_to_gcs(GCS_BUCKET_NAME, local_file_path, destination_blob_name)
+        logger.info(f"Saved client info for {phone} to GCS")
     except Exception as e:
         logger.error(f"Error saving client info for {phone}: {str(e)}")
 
@@ -170,18 +205,22 @@ def extract_text_from_txt(txt_path):
         logger.error(f"Error al leer archivo de texto {txt_path}: {str(e)}", exc_info=True)
         return ""
 
-def upload_file_to_gcs(bucket_name, source_file_path, destination_blob_name):
-    """Upload a file to Google Cloud Storage and return a pre-signed URL."""
-    bucket = storage_client.bucket(bucket_name)
-    blob = bucket.blob(destination_blob_name)
-    blob.upload_from_filename(source_file_path)
-    # Generate a pre-signed URL valid for 1 hour
-    url = blob.generate_signed_url(
-        expiration=timedelta(hours=1),
-        method="GET",
-        version="v4"
-    )
-    return url
+def load_downloadable_urls(project):
+    """Load downloadable URLs from DESCARGABLES.TXT."""
+    descargables_file = os.path.join(GCS_BASE_PATH, project, "DESCARGABLES", "DESCARGABLES.TXT")
+    urls = {}
+    try:
+        if os.path.exists(descargables_file):
+            with open(descargables_file, 'r', encoding='utf-8') as f:
+                for line in f:
+                    if ':' in line:
+                        key, url = line.split(':', 1)
+                        urls[key.strip()] = url.strip()
+            logger.info(f"Loaded downloadable URLs for {project}: {urls}")
+        return urls
+    except Exception as e:
+        logger.error(f"Error loading DESCARGABLES.TXT for {project}: {str(e)}")
+        return {}
 
 def load_projects_from_folder(base_path=GCS_BASE_PATH):
     """Load project data from folder."""
@@ -201,6 +240,7 @@ def load_projects_from_folder(base_path=GCS_BASE_PATH):
 
     for project in projects:
         downloadable_links[project] = {}
+        downloadable_urls[project] = {}  # Initialize URLs dictionary
         projects_data[project] = ""
 
     for project in projects:
@@ -240,6 +280,9 @@ def load_projects_from_folder(base_path=GCS_BASE_PATH):
                 logger.warning(f"Carpeta DESCARGABLES del proyecto {project} está vacía o no contiene archivos válidos.")
         else:
             logger.warning(f"Carpeta DESCARGABLES no encontrada para el proyecto {project}.")
+
+        # Load URLs from DESCARGABLES.TXT
+        downloadable_urls[project] = load_downloadable_urls(project)
 
     return downloadable_files
 
@@ -408,7 +451,8 @@ def whatsapp():
         logger.debug("Updating conversation history")
         try:
             conversation_state[phone]['history'].append(f"Cliente: {incoming_msg}")
-            conversation_state[phone]['history'] = conversation_state[phone]['history'][-5:]
+            # Increase history limit to 10 messages
+            conversation_state[phone]['history'] = conversation_state[phone]['history'][-10:]
             logger.debug(f"Updated conversation history: {conversation_state[phone]['history']}")
         except Exception as history_update_e:
             logger.error(f"Error updating conversation history: {str(history_update_e)}", exc_info=True)
@@ -472,11 +516,6 @@ def whatsapp():
             for project, data in projects_data.items():
                 project_info += f"Proyecto: {project}\n"
                 project_info += f"Información: {data}\n"
-                if project in downloadable_files and downloadable_files[project]:
-                    project_info += "Archivos descargables:\n"
-                    for file in downloadable_files[project]:
-                        link = downloadable_links.get(project, {}).get(file, "Enlace no disponible")
-                        project_info += f"- {file}\n"
                 project_info += "\n"
             logger.debug(f"Project info prepared: {project_info}")
         except Exception as project_info_e:
@@ -520,7 +559,7 @@ def whatsapp():
 
             template_response = bot_config.TEMPLATE_RESPONSE
             conversation_state[phone]['history'].append(f"Giselle: {template_response}")
-            conversation_state[phone]['history'] = conversation_state[phone]['history'][-5:]
+            conversation_state[phone]['history'] = conversation_state[phone]['history'][-10:]
 
             save_conversation_state()
             save_conversation_history(phone, conversation_state[phone]['history'])
@@ -606,7 +645,7 @@ def whatsapp():
             if not messages:
                 messages = ["No sé exactamente, pero déjame investigarlo."]
 
-            # Check for file requests
+            # Check for file requests or location requests
             requested_file = None
             project = None
             for proj, files in downloadable_files.items():
@@ -620,35 +659,39 @@ def whatsapp():
 
             if requested_file and project:
                 try:
-                    file_path = os.path.join(GCS_BASE_PATH, project, "DESCARGABLES", requested_file)
-                    logger.debug(f"Uploading file to GCS: {file_path}")
-                    if os.path.exists(file_path):
-                        public_url = upload_file_to_gcs(GCS_BUCKET_NAME, file_path, f"public/{project}/{requested_file}")
-                        logger.debug(f"File uploaded to GCS, public URL: {public_url}")
-                        message = client.messages.create(
-                            from_=WHATSAPP_SENDER_NUMBER,
-                            body=bot_config.FILE_SENT_MESSAGE.format(requested_file=requested_file),
-                            media_url=[public_url],
-                            to=phone
-                        )
-                        logger.info(f"Archivo enviado a través de Twilio: SID {message.sid}, Estado: {message.status}")
-                        conversation_state[phone]['history'].append(f"Giselle: {bot_config.FILE_SENT_MESSAGE.format(requested_file=requested_file)}")
-                        save_conversation_state()
-                        save_conversation_history(phone, conversation_state[phone]['history'])
-                        save_client_info(phone)
-                        return "Mensaje enviado"
+                    file_urls = downloadable_urls.get(project, {})
+                    file_url = file_urls.get(requested_file)
+                    if file_url:
+                        messages.append(bot_config.FILE_SENT_MESSAGE.format(requested_file=requested_file, file_url=file_url))
                     else:
-                        logger.error(f"File {file_path} does not exist")
+                        logger.error(f"URL for {requested_file} not found in DESCARGABLES.TXT for {project}")
                         messages.append(bot_config.FILE_ERROR_MESSAGE.format(requested_file=requested_file))
-                except Exception as file_e:
-                    logger.error(f"Error al enviar archivo: {str(file_e)}", exc_info=True)
+                except Exception as e:
+                    logger.error(f"Error al obtener URL del archivo: {str(e)}", exc_info=True)
                     messages.append(bot_config.FILE_ERROR_MESSAGE.format(requested_file=requested_file))
+            elif "ubicación" in incoming_msg.lower() or "location" in incoming_msg.lower() or "google maps" in incoming_msg.lower():
+                # Find the project mentioned in the message or use the first available project
+                mentioned_project = None
+                for proj in downloadable_urls.keys():
+                    if proj.lower() in incoming_msg.lower():
+                        mentioned_project = proj
+                        break
+                if not mentioned_project and downloadable_urls:
+                    mentioned_project = list(downloadable_urls.keys())[0]
+
+                if mentioned_project:
+                    file_urls = downloadable_urls.get(mentioned_project, {})
+                    location_url = file_urls.get("Ubicación en Google Maps")
+                    if location_url:
+                        messages.append(bot_config.LOCATION_MESSAGE.format(location_url=location_url))
+                    else:
+                        messages.append("Lo siento, no tengo la URL de la ubicación para este proyecto.")
 
             send_consecutive_messages(phone, messages)
 
             for msg in messages:
                 conversation_state[phone]['history'].append(f"Giselle: {msg}")
-            conversation_state[phone]['history'] = conversation_state[phone]['history'][-5:]
+            conversation_state[phone]['history'] = conversation_state[phone]['history'][-10:]
 
             save_conversation_state()
             save_conversation_history(phone, conversation_state[phone]['history'])
