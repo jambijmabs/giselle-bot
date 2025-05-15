@@ -1,4 +1,3 @@
-# bot_config.py
 import re
 from datetime import datetime, timedelta
 
@@ -28,16 +27,15 @@ RESPONSE_INSTRUCTIONS = """
 - Usa un tono natural y conversacional, como si estuvieras charlando con un amigo (e.g., "Tenemos algo que creo que te va a gustar").
 - Despierta curiosidad con frases intrigantes como "una ubicación que te sorprenderá" o "un detalle que hace este proyecto único".
 - No des toda la información de una vez; por ejemplo, menciona un proyecto y espera a que el cliente pregunte más (e.g., "Tenemos KABAN en Holbox... ¿te gustaría saber más?").
-- Si el cliente solicita información adicional o documentos, proporciona las URLs de los archivos descargables disponibles en el archivo informativo del proyecto, sin inventar enlaces.
 - Pregunta por el nombre del cliente en el primer mensaje: "Hola... ¿Cuál es tu nombre?".
 - Pregunta por el presupuesto del cliente de manera natural después de conocer su nombre, pero no insistas (e.g., "¿Tienes un presupuesto en mente?").
 - Si el cliente no ha respondido después de 2 mensajes, pregunta por su horario y días preferidos de contacto de manera natural.
 - Cuando detectes objeciones (como "es muy caro", "no estoy seguro"), aplica las técnicas de "Rompe la Barrera del No": usa el espejo, etiquetado y preguntas calibradas.
-- Después de proporcionar información básica sobre un proyecto, ofrece proactivamente enviar las URLs de archivos relevantes si el cliente no las ha solicitado.
+- Interpreta la información de los proyectos de forma autónoma, incluyendo precios, URLs de archivos descargables y otros detalles, y responde de manera natural.
 """
 
 # ChatGPT model to use
-CHATGPT_MODEL = "gpt-4.1-mini"  # Moved from app.py
+CHATGPT_MODEL = "gpt-4.1-mini"
 
 # Mensajes predefinidos
 INITIAL_INTRO = """
