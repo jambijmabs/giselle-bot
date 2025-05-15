@@ -20,7 +20,6 @@ STATE_FILE = "conversation_state.json"
 DEFAULT_PORT = 8080
 WHATSAPP_TEMPLATE_SID = "HX1234567890abcdef1234567890abcdef"
 WHATSAPP_TEMPLATE_VARIABLES = {"1": "Cliente"}
-CHATGPT_MODEL = "gpt-4.1-mini"
 
 # Configure logging
 logging.basicConfig(
@@ -106,14 +105,44 @@ def whatsapp():
 
         logger.info(f"Mensaje recibido de {phone}: {incoming_msg}")
 
-        # Load conversation history
-        history = utils.load_conversation_history(phone, GCS_BUCKET_NAME, GCS_CONVERSATIONS_PATH)
-        logger.debug(f"Conversation history loaded: {history}")
+        # Load conversation history with error handling
+        try:
+            history = utils.load_conversation_history(phone, GCS_BUCKET_NAME, GCS_CONVERSATIONS_PATH)
+            logger.debug(f"Conversation history loaded: {history}")
+        except Exception as e:
+            logger.error(f"Failed to load conversation history: {str(e)}")
+            history = []  # Proceed with an empty history to avoid failing the entire request
 
-        # Initialize conversation state
-        if phone not in conversation_state:
+        # Initialize conversation state with error handling
+        try:
+            if phone not in conversation_state:
+                conversation_state[phone] = {
+                    'history': history,
+                    'name_asked': 0,
+                    'budget_asked': 0,
+                    'contact_time_asked': 0,
+                    'messages_since_budget_ask': 0,
+                    'messages_without_response': 0,
+                    'preferred_time': None,
+                    'preferred_days': None,
+                    'client_name': None,
+                    'client_budget': None,
+                    'last_contact': datetime.now().isoformat(),
+                    'recontact_attempts': 0,
+                    'no_interest': False,
+                    'schedule_next': None,
+                    'last_incoming_time': datetime.now().isoformat(),
+                    'introduced': False,
+                    'project_info_shared': {}
+                }
+            else:
+                conversation_state[phone]['history'] = history
+                conversation_state[phone]['messages_without_response'] = 0
+                conversation_state[phone]['last_incoming_time'] = datetime.now().isoformat()
+        except Exception as e:
+            logger.error(f"Error initializing conversation state: {str(e)}")
             conversation_state[phone] = {
-                'history': history,
+                'history': [],
                 'name_asked': 0,
                 'budget_asked': 0,
                 'contact_time_asked': 0,
@@ -131,10 +160,6 @@ def whatsapp():
                 'introduced': False,
                 'project_info_shared': {}
             }
-        else:
-            conversation_state[phone]['history'] = history
-            conversation_state[phone]['messages_without_response'] = 0
-            conversation_state[phone]['last_incoming_time'] = datetime.now().isoformat()
 
         conversation_state[phone]['history'].append(f"Cliente: {incoming_msg}")
         conversation_state[phone]['history'] = conversation_state[phone]['history'][-10:]
@@ -203,7 +228,7 @@ def whatsapp():
                     mentioned_project = project
             logger.debug(f"Project info prepared: {project_info}")
         except Exception as project_info_e:
-            logger.error(f"Error preparing project information: {str(project_info_e)}", exc_info=True)
+            logger.error(f"Error preparing project information: {str(project_info_e)}")
             project_info = "Información de proyectos no disponible."
 
         # Build conversation history
