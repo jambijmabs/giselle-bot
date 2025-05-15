@@ -98,17 +98,21 @@ def process_message(incoming_msg, phone, conversation_state, project_info, conve
     if not mentioned_project:
         mentioned_project = list(projects_data.keys())[0] if projects_data else None
 
+    client_name = conversation_state[phone].get('client_name', 'Cliente')
+
     # Check for price requests
     if any(keyword in normalized_msg for keyword in ["precio", "cost", "cuesta", "cuánto"]):
         if mentioned_project and mentioned_project in project_details:
             prices = project_details[mentioned_project]['prices']
             if prices:
-                messages.append(f"Los precios de las unidades en {mentioned_project} son:")
+                messages.append(f"¡Hola {client_name}! Te comparto con gusto los precios de las unidades disponibles en {mentioned_project}:")
                 for price_info in prices:
                     messages.append(f"- {price_info['unit']}: {price_info['bedrooms']} por {price_info['price']}")
+                messages.append("¿Te interesa alguna unidad en particular o quieres que te cuente más sobre las opciones de pago?")
                 handled = True
             else:
-                messages.append(f"Lo siento, no tengo información de precios para {mentioned_project}.")
+                messages.append(f"Lo siento, {client_name}, no tengo información de precios para {mentioned_project} en este momento.")
+                messages.append("¿Te gustaría que te envíe el documento con más detalles del proyecto?")
                 handled = True
 
     # Check for payment plans/forms requests
@@ -116,12 +120,14 @@ def process_message(incoming_msg, phone, conversation_state, project_info, conve
         if mentioned_project and mentioned_project in project_details:
             plans = project_details[mentioned_project]['payment_plans']
             if plans:
-                messages.append(f"Los planes de pago para {mentioned_project} son:")
+                messages.append(f"¡Claro, {client_name}! En {mentioned_project} ofrecemos varias opciones de planes de pago para que elijas la que mejor se adapte a tus necesidades:")
                 for plan in plans:
                     messages.append(f"- Opción {plan['option']}: {plan['plan']}")
+                messages.append("Cada plan tiene beneficios distintos, ¿te gustaría saber más sobre los descuentos disponibles?")
                 handled = True
             else:
-                messages.append(f"Lo siento, no tengo información de planes de pago para {mentioned_project}.")
+                messages.append(f"Lo siento, {client_name}, no tengo información de planes de pago para {mentioned_project} en este momento.")
+                messages.append("¿Te gustaría que te envíe el documento con más detalles del proyecto?")
                 handled = True
 
     # Check for discounts requests
@@ -129,13 +135,78 @@ def process_message(incoming_msg, phone, conversation_state, project_info, conve
         if mentioned_project and mentioned_project in project_details:
             discounts = project_details[mentioned_project]['discounts']
             if discounts:
-                messages.append(f"Los descuentos disponibles para {mentioned_project} son:")
+                messages.append(f"¡Por supuesto, {client_name}! En {mentioned_project} ofrecemos descuentos dependiendo del plan de pago que elijas:")
                 for option, discount in discounts.items():
                     messages.append(f"- Opción {option}: {discount} de descuento")
+                messages.append("¿Te gustaría revisar los planes de pago completos para que elijas el mejor para ti?")
                 handled = True
             else:
-                messages.append(f"Lo siento, no tengo información de descuentos para {mentioned_project}.")
+                messages.append(f"Lo siento, {client_name}, no tengo información de descuentos para {mentioned_project} en este momento.")
+                messages.append("¿Te gustaría que te envíe el documento con más detalles del proyecto?")
                 handled = True
+
+    # Check for file requests or location requests
+    requested_file = None
+    if mentioned_project:
+        for file in downloadable_urls.get(mentioned_project, {}).keys():
+            # Normalize file name for comparison
+            normalized_file = file.replace(" ", "").lower()
+            normalized_msg = incoming_msg.replace(" ", "").lower()
+            # Handle variations in file names (e.g., "presentacion de venta", "presentacion de ventas")
+            if "presentacion" in normalized_msg and "venta" in normalized_msg and "presentacion de venta" in normalized_file:
+                requested_file = file
+                break
+            elif "lista de precios" in normalized_msg and "lista de precios" in normalized_file:
+                requested_file = file
+                break
+            elif "especificaciones" in normalized_msg and "especificaciones" in normalized_file:
+                requested_file = file
+                break
+            elif "mobiliario" in normalized_msg and "maquech" in normalized_msg and "mobiliario incluido en maquech" in normalized_file:
+                requested_file = file
+                break
+            elif "mobiliario" in normalized_msg and "balam" in normalized_msg and "mobiliario incluido en balam" in normalized_file:
+                requested_file = file
+                break
+            elif "mobiliario" in normalized_msg and "kai" in normalized_msg and "mobiliario incluido en kai" in normalized_file:
+                requested_file = file
+                break
+            elif normalized_file in normalized_msg:
+                requested_file = file
+                break
+
+    # Check if the message explicitly requests a file or location
+    explicit_file_request = any(keyword in normalized_msg for keyword in [
+        "mándame", "envíame", "pásame", "quiero el archivo", "presentación", "especificaciones", "entrega", "mobiliario", "pdf"
+    ])
+    location_request = "ubicación" in normalized_msg or "location" in normalized_msg or "google maps" in normalized_msg
+
+    if explicit_file_request and requested_file and mentioned_project:
+        file_urls = downloadable_urls.get(mentioned_project, {})
+        logger.debug(f"File URLs for project {mentioned_project}: {file_urls}")
+        file_url = file_urls.get(requested_file)
+        if file_url:
+            messages.append(f"¡Claro, {client_name}! Aquí tienes el enlace para que puedas revisar {requested_file} con todos los detalles:")
+            messages.append(f"{file_url}")
+            messages.append("Si tienes alguna pregunta sobre el documento o quieres saber más del proyecto, estaré encantada de ayudarte.")
+        else:
+            messages.append(bot_config.FILE_ERROR_MESSAGE.format(requested_file=requested_file))
+        handled = True
+    elif location_request:
+        if mentioned_project:
+            file_urls = downloadable_urls.get(mentioned_project, {})
+            location_url = file_urls.get("ubicacion")
+            if location_url:
+                messages.append(f"¡Claro, {client_name}! La ubicación de {mentioned_project} es un lugar muy especial, aquí tienes el enlace para que lo explores:")
+                messages.append(f"{location_url}")
+                messages.append("¿Te gustaría saber más sobre cómo llegar o sobre las características del entorno?")
+            else:
+                messages.append(f"Lo siento, {client_name}, no tengo la URL de la ubicación para {mentioned_project}.")
+                messages.append("¿Te gustaría que te envíe más información del proyecto?")
+        handled = True
+    elif mentioned_project and bot_config.should_offer_files(conversation_state[phone], conversation_history, mentioned_project):
+        messages.append(bot_config.OFFER_FILES_MESSAGE.format(project=mentioned_project))
+        handled = True
 
     # If the message was handled with specific info, return the response
     if handled:
@@ -182,7 +253,7 @@ def process_message(incoming_msg, phone, conversation_state, project_info, conve
                 {"role": "system", "content": bot_config.BOT_PERSONALITY},
                 {"role": "user", "content": prompt}
             ],
-            max_tokens=50,
+            max_tokens=100,  # Increased to allow for more detailed responses
             temperature=0.7
         )
         reply = response.choices[0].message.content.strip()
@@ -203,7 +274,7 @@ def process_message(incoming_msg, phone, conversation_state, project_info, conve
             continue
         sentence = sentence.strip()
         if sentence:
-            if len(current_message.split('\n')) < 2 and len(current_message) < 50:
+            if len(current_message.split('\n')) < 2 and len(current_message) < 100:
                 current_message += (sentence + '. ') if current_message else sentence + '. '
             else:
                 messages.append(current_message.strip())
@@ -212,7 +283,7 @@ def process_message(incoming_msg, phone, conversation_state, project_info, conve
         messages.append(current_message.strip())
 
     if not messages:
-        messages = ["No sé exactamente, pero déjame investigarlo."]
+        messages = ["No sé exactamente, pero déjame investigarlo con más detalle para ti."]
 
     return messages, mentioned_project
 
