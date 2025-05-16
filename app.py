@@ -76,7 +76,9 @@ def whatsapp():
 
         logger.debug("Extracting message content")
         num_media = int(request.values.get('NumMedia', '0'))
+        logger.debug(f"Number of media items: {num_media}")
         phone = request.values.get('From', '')
+        logger.debug(f"From phone: {phone}")
 
         # Check if the message contains audio
         if num_media > 0:
@@ -84,18 +86,31 @@ def whatsapp():
             media_content_type = request.values.get('MediaContentType0', '')
             logger.debug(f"Media detected: URL={media_url}, Content-Type={media_content_type}")
 
-            if 'audio' in media_content_type:
+            if 'audio' in media_content_type.lower():
+                logger.debug("Processing audio message")
                 messages, incoming_msg = message_handler.handle_audio_message(
                     media_url, phone, TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN
                 )
                 if messages:
+                    logger.debug(f"Audio message processing returned messages: {messages}")
+                    utils.send_consecutive_messages(phone, messages, client, WHATSAPP_SENDER_NUMBER)
+                    return "Mensaje enviado"
+                elif incoming_msg:
+                    logger.debug(f"Audio transcribed to text: {incoming_msg}")
+                    # Continue processing the transcribed text as a regular message
+                    incoming_msg = incoming_msg.strip()
+                else:
+                    logger.error("Audio processing failed with no messages or transcription")
+                    messages = ["Lo siento, no pude procesar tu mensaje de audio. ¿Puedes intentarlo de nuevo o escribirlo como texto?"]
                     utils.send_consecutive_messages(phone, messages, client, WHATSAPP_SENDER_NUMBER)
                     return "Mensaje enviado"
             else:
+                logger.debug(f"Media type is not audio: {media_content_type}")
                 messages = ["Lo siento, solo puedo procesar mensajes de texto o audio. ¿Puedes enviar tu mensaje de otra forma?"]
                 utils.send_consecutive_messages(phone, messages, client, WHATSAPP_SENDER_NUMBER)
                 return "Mensaje enviado"
         else:
+            logger.debug("No media detected, processing as text message")
             incoming_msg = request.values.get('Body', '').strip()
 
         logger.debug(f"Incoming message: {incoming_msg}, Phone: {phone}")
