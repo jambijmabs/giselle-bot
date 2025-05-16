@@ -10,6 +10,7 @@ import message_handler
 
 # Configuration Section
 WHATSAPP_SENDER_NUMBER = "whatsapp:+18188732305"
+GERENTE_PHONE = "whatsapp:+528110665094"
 TWILIO_ACCOUNT_SID = os.getenv('TWILIO_ACCOUNT_SID')
 TWILIO_AUTH_TOKEN = os.getenv('TWILIO_AUTH_TOKEN')
 OPENAI_API_KEY = os.getenv('OPENAI_API_KEY')
@@ -93,9 +94,21 @@ def whatsapp():
             return "Error: Invalid phone number format", 400
 
         # Check if the message is from the gerente
-        client_phone, gerente_messages = message_handler.handle_gerente_response(phone, phone, conversation_state, GCS_BUCKET_NAME)
+        incoming_msg = request.values.get('Body', '').strip()
+        client_phone, gerente_messages = message_handler.handle_gerente_response(incoming_msg, phone, conversation_state, GCS_BUCKET_NAME)
         if gerente_messages:
+            logger.debug(f"Sending gerente response to client {client_phone}: {gerente_messages}")
             utils.send_consecutive_messages(client_phone, gerente_messages, client, WHATSAPP_SENDER_NUMBER)
+            # Save conversation state and history for the client
+            utils.save_conversation_state(conversation_state, GCS_BUCKET_NAME, GCS_CONVERSATIONS_PATH)
+            if client_phone in conversation_state:
+                utils.save_conversation_history(client_phone, conversation_state[client_phone]['history'], GCS_BUCKET_NAME, GCS_CONVERSATIONS_PATH)
+                utils.save_client_info(client_phone, conversation_state, GCS_BUCKET_NAME, GCS_CONVERSATIONS_PATH)
+            return "Mensaje enviado"
+
+        # Skip client state initialization for the gerente
+        if phone == GERENTE_PHONE:
+            logger.debug(f"Message from gerente {phone}, skipping client processing.")
             return "Mensaje enviado"
 
         # Check if the message contains audio
@@ -168,7 +181,7 @@ def whatsapp():
                     'last_incoming_time': datetime.now().isoformat(),
                     'introduced': False,
                     'project_info_shared': {},
-                    'last_mentioned_project': None  # New field to persist mentioned project
+                    'last_mentioned_project': None
                 }
             else:
                 conversation_state[phone]['history'] = history
