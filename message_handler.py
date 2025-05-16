@@ -3,6 +3,8 @@ import logging
 import requests
 from openai import OpenAI
 import bot_config
+import traceback
+import os
 
 # Configure logger
 logger = logging.getLogger(__name__)
@@ -122,19 +124,19 @@ def handle_audio_message(media_url, phone, twilio_account_sid, twilio_auth_token
         f.write(audio_response.content)
     logger.debug(f"Audio saved to {audio_file_path}")
 
-    # Transcribe the audio using Whisper
+    # Transcribe the audio using Whisper (compatible with openai==0.27.0)
     try:
         with open(audio_file_path, 'rb') as audio_file:
-            transcription = openai_client.audio.transcriptions.create(
+            transcription = openai_client.Audio.transcribe(
                 model="whisper-1",
                 file=audio_file,
                 language="es"  # Assuming Spanish audio
             )
-        incoming_msg = transcription.text.strip()
+        incoming_msg = transcription['text'].strip()
         logger.info(f"Audio transcribed: {incoming_msg}")
         return None, incoming_msg
     except Exception as e:
-        logger.error(f"Error transcribing audio: {str(e)}")
+        logger.error(f"Error transcribing audio: {str(e)}\n{traceback.format_exc()}")
         return ["Lo siento, no pude entender tu mensaje de audio. ¿Puedes intentarlo de nuevo o escribirlo como texto?"], None
     finally:
         if os.path.exists(audio_file_path):
