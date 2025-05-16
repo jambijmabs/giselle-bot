@@ -147,7 +147,7 @@ def whatsapp():
                     'last_incoming_time': datetime.now().isoformat(),
                     'introduced': False,
                     'project_info_shared': {},
-                    'last_mentioned_project': None  # New field to persist mentioned project
+                    'last_mentioned_project': None
                 }
             else:
                 conversation_state[phone]['history'] = history
@@ -189,7 +189,7 @@ def whatsapp():
             utils.save_client_info(phone, conversation_state, GCS_BUCKET_NAME, GCS_CONVERSATIONS_PATH)
         elif conversation_state[phone].get('name_asked', 0) > 0 and not conversation_state[phone].get('client_name'):
             name = incoming_msg.strip()
-            if name and name.lower() != 'hola':  # Prevent setting 'hola' as the name
+            if name and name.lower() not in ['hola', 'holas']:  # Prevent setting 'hola' or 'holas' as the name
                 conversation_state[phone]['client_name'] = name.capitalize()
                 logger.info(f"Client name set to: {conversation_state[phone]['client_name']}")
                 utils.save_client_info(phone, conversation_state, GCS_BUCKET_NAME, GCS_CONVERSATIONS_PATH)
