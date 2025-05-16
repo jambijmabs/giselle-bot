@@ -98,12 +98,15 @@ def whatsapp():
         client_phone, gerente_messages = message_handler.handle_gerente_response(incoming_msg, phone, conversation_state, GCS_BUCKET_NAME)
         if gerente_messages:
             logger.debug(f"Sending gerente response to client {client_phone}: {gerente_messages}")
-            utils.send_consecutive_messages(client_phone, gerente_messages, client, WHATSAPP_SENDER_NUMBER)
-            # Save conversation state and history for the client
-            utils.save_conversation_state(conversation_state, GCS_BUCKET_NAME, GCS_CONVERSATIONS_PATH)
-            if client_phone in conversation_state:
-                utils.save_conversation_history(client_phone, conversation_state[client_phone]['history'], GCS_BUCKET_NAME, GCS_CONVERSATIONS_PATH)
-                utils.save_client_info(client_phone, conversation_state, GCS_BUCKET_NAME, GCS_CONVERSATIONS_PATH)
+            if client_phone:
+                utils.send_consecutive_messages(client_phone, gerente_messages, client, WHATSAPP_SENDER_NUMBER)
+                # Save conversation state and history for the client
+                utils.save_conversation_state(conversation_state, GCS_BUCKET_NAME, GCS_CONVERSATIONS_PATH)
+                if client_phone in conversation_state:
+                    utils.save_conversation_history(client_phone, conversation_state[client_phone]['history'], GCS_BUCKET_NAME, GCS_CONVERSATIONS_PATH)
+                    utils.save_client_info(client_phone, conversation_state, GCS_BUCKET_NAME, GCS_CONVERSATIONS_PATH)
+            else:
+                logger.error("Failed to find client phone to send gerente response.")
             return "Mensaje enviado"
 
         # Skip client state initialization for the gerente
@@ -367,6 +370,10 @@ if __name__ == '__main__':
         logger.info("Starting application initialization...")
         utils.load_conversation_state(conversation_state, GCS_BUCKET_NAME, GCS_CONVERSATIONS_PATH)
         logger.info("Conversation state loaded")
+        # Clear any existing state for the gerente's number
+        if GERENTE_PHONE in conversation_state:
+            del conversation_state[GERENTE_PHONE]
+            logger.info(f"Cleared conversation state for gerente phone: {GERENTE_PHONE}")
         utils.download_projects_from_storage(GCS_BUCKET_NAME, GCS_BASE_PATH)
         logger.info("Projects downloaded from storage")
         utils.load_projects_from_folder(GCS_BASE_PATH)
