@@ -80,6 +80,18 @@ def whatsapp():
         phone = request.values.get('From', '')
         logger.debug(f"From phone: {phone}")
 
+        # Normalize the phone number early
+        phone = phone.strip()
+        if not phone.startswith('whatsapp:+'):
+            if phone.startswith('whatsapp:'):
+                phone = f"whatsapp:+{phone[len('whatsapp:'):]}"
+            else:
+                phone = f"whatsapp:+{phone}"
+
+        if not phone.startswith('whatsapp:+'):
+            logger.error(f"Invalid phone number format after normalization: {repr(phone)}")
+            return "Error: Invalid phone number format", 400
+
         # Check if the message is from the gerente
         client_phone, gerente_messages = message_handler.handle_gerente_response(phone, phone, conversation_state, GCS_BUCKET_NAME)
         if gerente_messages:
@@ -124,18 +136,6 @@ def whatsapp():
         if not incoming_msg or not phone:
             logger.error("No se encontraron 'Body' o 'From' en la solicitud")
             return "Error: Solicitud incompleta", 400
-
-        # Normalize the phone number
-        phone = phone.strip()
-        if not phone.startswith('whatsapp:+'):
-            if phone.startswith('whatsapp:'):
-                phone = f"whatsapp:+{phone[len('whatsapp:'):]}"
-            else:
-                phone = f"whatsapp:+{phone}"
-
-        if not phone.startswith('whatsapp:+'):
-            logger.error(f"Invalid phone number format after normalization: {repr(phone)}")
-            return "Error: Invalid phone number format", 400
 
         logger.info(f"Mensaje recibido de {phone}: {incoming_msg}")
 
