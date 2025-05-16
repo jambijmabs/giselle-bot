@@ -1,7 +1,7 @@
 import re
 import logging
 import requests
-import openai
+from openai import OpenAI
 import bot_config
 import traceback
 import os
@@ -9,13 +9,14 @@ import os
 # Configure logger
 logger = logging.getLogger(__name__)
 
-# Global variables for project data
+# Initialize OpenAI client and global data
+openai_client = None
 projects_data = {}
 downloadable_urls = {}
 
 def initialize_message_handler(openai_api_key, projects_data_ref, downloadable_urls_ref):
-    global projects_data, downloadable_urls
-    openai.api_key = openai_api_key
+    global openai_client, projects_data, downloadable_urls
+    openai_client = OpenAI(api_key=openai_api_key)
     projects_data = projects_data_ref
     downloadable_urls = downloadable_urls_ref
     logger.debug(f"Initialized with projects_data: {list(projects_data.keys())}")
@@ -72,7 +73,7 @@ def process_message(incoming_msg, phone, conversation_state, project_info, conve
     logger.debug(f"ChatGPT prompt: {prompt}")
 
     try:
-        response = openai.ChatCompletion.create(
+        response = openai_client.chat.completions.create(
             model=bot_config.CHATGPT_MODEL,
             messages=[
                 {"role": "system", "content": bot_config.BOT_PERSONALITY},
@@ -81,7 +82,7 @@ def process_message(incoming_msg, phone, conversation_state, project_info, conve
             max_tokens=150,
             temperature=0.7
         )
-        reply = response['choices'][0]['message']['content'].strip()
+        reply = response.choices[0].message.content.strip()
         logger.debug(f"Generated response: {reply}")
     except Exception as openai_e:
         logger.error(f"Fallo con OpenAI API: {str(openai_e)}")
@@ -123,15 +124,15 @@ def handle_audio_message(media_url, phone, twilio_account_sid, twilio_auth_token
         f.write(audio_response.content)
     logger.debug(f"Audio saved to {audio_file_path}")
 
-    # Transcribe the audio using Whisper (compatible with openai==0.27.0)
+    # Transcribe the audio using Whisper
     try:
         with open(audio_file_path, 'rb') as audio_file:
-            transcription = openai.Audio.transcribe(
+            transcription = openai_client.audio.transcriptions.create(
                 model="whisper-1",
                 file=audio_file,
                 language="es"  # Assuming Spanish audio
             )
-        incoming_msg = transcription['text'].strip()
+        incoming_msg = transcription.text.strip()
         logger.info(f"Audio transcribed: {incoming_msg}")
         return None, incoming_msg
     except Exception as e:
