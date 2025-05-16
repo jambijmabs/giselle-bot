@@ -269,19 +269,11 @@ def whatsapp():
         conversation_history = "\n".join(conversation_state[phone]['history'])
 
         # Process the message and generate a response
-        try:
-            # Ensure name_asked is set when GISELLE sends the initial intro
-            if not conversation_state[phone].get('introduced', False):
-                conversation_state[phone]['name_asked'] = 1  # Set name_asked when asking for name
-            messages, mentioned_project = message_handler.process_message(
-                incoming_msg, phone, conversation_state, project_info, conversation_history
-            )
-            logger.debug(f"Messages generated: {messages}")
-            logger.debug(f"Mentioned project after processing: {mentioned_project}")
-        except Exception as e:
-            logger.error(f"Error processing message: {str(e)}")
-            messages = ["Lo siento, ocurrió un error al procesar tu mensaje. ¿En qué más puedo ayudarte?"]
-            mentioned_project = None
+        messages, mentioned_project = message_handler.process_message(
+            incoming_msg, phone, conversation_state, project_info, conversation_history
+        )
+        logger.debug(f"Messages generated: {messages}")
+        logger.debug(f"Mentioned project after processing: {mentioned_project}")
 
         # Update the last mentioned project in conversation state
         if mentioned_project:
