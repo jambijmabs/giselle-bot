@@ -10,7 +10,7 @@ logger = logging.getLogger(__name__)
 # Global dictionaries for project data
 projects_data = {}
 downloadable_links = {}
-downloadable_urls = {}  # Will now be populated from project files (e.g., KABAN.txt)
+downloadable_urls = {}
 downloadable_files = {}
 
 # Initialize Google Cloud Storage client
@@ -188,13 +188,12 @@ def load_projects_from_folder(base_path):
 
     for project in projects:
         downloadable_links[project] = {}
-        downloadable_urls[project] = {}  # Initialize URLs dictionary
+        downloadable_urls[project] = {}
         projects_data[project] = ""
 
     for project in projects:
         project_path = os.path.join(base_path, project)
         file_count = 0
-        # Look for a specific file named after the project (e.g., KABAN.txt)
         project_file = f"{project}.txt"
         file_path = os.path.join(project_path, project_file)
 
@@ -207,6 +206,8 @@ def load_projects_from_folder(base_path):
                 file_count += 1
                 # Log the raw content for debugging
                 logger.debug(f"Raw content of {project_file}:\n{text}")
+            else:
+                logger.warning(f"El archivo {project_file} está vacío o no se pudo leer.")
         else:
             logger.warning(f"No se encontró el archivo {project_file} para el proyecto {project}.")
 
