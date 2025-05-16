@@ -76,7 +76,15 @@ def whatsapp():
 
         logger.debug("Extracting message content")
         num_media = int(request.values.get('NumMedia', '0'))
+        logger.debug(f"Number of media items: {num_media}")
         phone = request.values.get('From', '')
+        logger.debug(f"From phone: {phone}")
+
+        # Check if the message is from the gerente
+        client_phone, gerente_messages = message_handler.handle_gerente_response(phone, phone, conversation_state, GCS_BUCKET_NAME)
+        if gerente_messages:
+            utils.send_consecutive_messages(client_phone, gerente_messages, client, WHATSAPP_SENDER_NUMBER)
+            return "Mensaje enviado"
 
         # Check if the message contains audio
         if num_media > 0:
@@ -84,18 +92,31 @@ def whatsapp():
             media_content_type = request.values.get('MediaContentType0', '')
             logger.debug(f"Media detected: URL={media_url}, Content-Type={media_content_type}")
 
-            if 'audio' in media_content_type:
+            if 'audio' in media_content_type.lower():
+                logger.debug("Processing audio message")
                 messages, incoming_msg = message_handler.handle_audio_message(
                     media_url, phone, TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN
                 )
                 if messages:
+                    logger.debug(f"Audio message processing returned messages: {messages}")
+                    utils.send_consecutive_messages(phone, messages, client, WHATSAPP_SENDER_NUMBER)
+                    return "Mensaje enviado"
+                elif incoming_msg:
+                    logger.debug(f"Audio transcribed to text: {incoming_msg}")
+                    # Continue processing the transcribed text as a regular message
+                    incoming_msg = incoming_msg.strip()
+                else:
+                    logger.error("Audio processing failed with no messages or transcription")
+                    messages = ["Lo siento, no pude procesar tu mensaje de audio. ¿Puedes intentarlo de nuevo o escribirlo como texto?"]
                     utils.send_consecutive_messages(phone, messages, client, WHATSAPP_SENDER_NUMBER)
                     return "Mensaje enviado"
             else:
+                logger.debug(f"Media type is not audio: {media_content_type}")
                 messages = ["Lo siento, solo puedo procesar mensajes de texto o audio. ¿Puedes enviar tu mensaje de otra forma?"]
                 utils.send_consecutive_messages(phone, messages, client, WHATSAPP_SENDER_NUMBER)
                 return "Mensaje enviado"
         else:
+            logger.debug("No media detected, processing as text message")
             incoming_msg = request.values.get('Body', '').strip()
 
         logger.debug(f"Incoming message: {incoming_msg}, Phone: {phone}")
@@ -254,19 +275,11 @@ def whatsapp():
         conversation_history = "\n".join(conversation_state[phone]['history'])
 
         # Process the message and generate a response
-        try:
-            # Ensure name_asked is set when GISELLE sends the initial intro
-            if not conversation_state[phone].get('introduced', False):
-                conversation_state[phone]['name_asked'] = 1  # Set name_asked when asking for name
-            messages, mentioned_project = message_handler.process_message(
-                incoming_msg, phone, conversation_state, project_info, conversation_history
-            )
-            logger.debug(f"Messages generated: {messages}")
-            logger.debug(f"Mentioned project after processing: {mentioned_project}")
-        except Exception as e:
-            logger.error(f"Error processing message: {str(e)}")
-            messages = ["Lo siento, ocurrió un error al procesar tu mensaje. ¿En qué más puedo ayudarte?"]
-            mentioned_project = None
+        messages, mentioned_project = message_handler.process_message(
+            incoming_msg, phone, conversation_state, project_info, conversation_history
+        )
+        logger.debug(f"Messages generated: {messages}")
+        logger.debug(f"Mentioned project after processing: {mentioned_project}")
 
         # Update the last mentioned project in conversation state
         if mentioned_project:
@@ -345,8 +358,10 @@ if __name__ == '__main__':
         logger.info("Projects downloaded from storage")
         utils.load_projects_from_folder(GCS_BASE_PATH)
         logger.info("Projects loaded from folder")
+        utils.load_gerente_respuestas(GCS_BASE_PATH)
+        logger.info("Gerente responses loaded")
         message_handler.initialize_message_handler(
-            OPENAI_API_KEY, utils.projects_data, utils.downloadable_urls
+            OPENAI_API_KEY, utils.projects_data, utils.downloadable_urls, TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN
         )
         logger.info("Message handler initialized")
         port = int(os.getenv("PORT", DEFAULT_PORT))
