@@ -12,6 +12,7 @@ projects_data = {}
 downloadable_links = {}
 downloadable_urls = {}
 downloadable_files = {}
+gerente_respuestas = {}  # New global to store gerente responses
 
 # Initialize Google Cloud Storage client
 try:
@@ -27,6 +28,10 @@ def get_conversation_history_filename(phone):
 def get_client_info_filename(phone):
     """Generate the filename for client info based on phone number."""
     return f"client_info_{phone.replace('+', '').replace(':', '_')}.txt"
+
+def get_gerente_respuestas_filename():
+    """Generate the filename for gerente responses."""
+    return "respuestas_gerencia.txt"
 
 def upload_to_gcs(bucket_name, source_file_path, destination_blob_name):
     """Upload a file to Google Cloud Storage."""
@@ -168,6 +173,53 @@ def extract_text_from_txt(txt_path):
     except Exception as e:
         logger.error(f"Error al leer archivo de texto {txt_path}: {str(e)}")
         return ""
+
+def load_gerente_respuestas(base_path):
+    """Load gerente responses from respuestas_gerencia.txt in the projects folder."""
+    global gerente_respuestas
+    gerente_respuestas = {}
+    filename = get_gerente_respuestas_filename()
+    file_path = os.path.join(base_path, filename)
+
+    try:
+        if os.path.isfile(file_path):
+            with open(file_path, 'r', encoding='utf-8') as f:
+                lines = f.readlines()
+                current_question = None
+                for line in lines:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    if line.startswith("Pregunta:"):
+                        current_question = line[len("Pregunta:"):].strip()
+                    elif line.startswith("Respuesta:") and current_question:
+                        answer = line[len("Respuesta:"):].strip()
+                        gerente_respuestas[current_question] = answer
+                        current_question = None
+            logger.info(f"Loaded gerente responses from {file_path}")
+        else:
+            logger.info(f"No gerente responses file found at {file_path}; starting fresh")
+    except Exception as e:
+        logger.error(f"Error loading gerente responses: {str(e)}")
+        gerente_respuestas = {}
+
+def save_gerente_respuesta(base_path, question, answer, gcs_bucket_name):
+    """Save a new gerente response to respuestas_gerencia.txt and upload to GCS."""
+    filename = get_gerente_respuestas_filename()
+    file_path = os.path.join(base_path, filename)
+    destination_blob_name = os.path.join("PROYECTOS", filename)
+
+    try:
+        # Append the new question and answer
+        with open(file_path, 'a', encoding='utf-8') as f:
+            f.write(f"Pregunta: {question}\n")
+            f.write(f"Respuesta: {answer}\n\n")
+        logger.info(f"Saved gerente response to {file_path}")
+
+        # Upload the updated file to GCS
+        upload_to_gcs(gcs_bucket_name, file_path, destination_blob_name)
+    except Exception as e:
+        logger.error(f"Error saving gerente response: {str(e)}")
 
 def load_projects_from_folder(base_path):
     """Load project data from project-specific .txt files."""
