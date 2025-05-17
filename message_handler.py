@@ -176,19 +176,26 @@ def handle_audio_message(media_url, phone, twilio_account_sid, twilio_auth_token
             os.remove(audio_file_path)
 
 def handle_gerente_response(incoming_msg, phone, conversation_state, gcs_bucket_name):
-    """Handle responses from the gerente and respond to the client."""
+    """Handle responses from the gerente and prepare a message for the client."""
     if phone != gerente_phone:
+        logger.debug(f"Message not from gerente: {phone}. Skipping gerente response handling.")
         return None, None  # Only process messages from the gerente
+
+    # Log the current state to debug
+    logger.debug(f"Handling gerente response from {phone}. Current conversation_state: {conversation_state}")
 
     # Check if there's a pending question
     client_phone = None
     for client, state in conversation_state.items():
-        if 'pending_question' in state and state['pending_question']['client_phone'] == client:
+        if 'pending_question' in state and state['pending_question'] and state['pending_question']['client_phone'] == client:
             client_phone = client
+            logger.debug(f"Found pending question for client {client}: {state['pending_question']}")
             break
+        else:
+            logger.debug(f"No pending question for client {client}: {state.get('pending_question', 'None')}")
 
-    if not client_phone or 'pending_question' not in conversation_state[client_phone]:
-        logger.debug("No pending question found for gerente response.")
+    if not client_phone or 'pending_question' not in conversation_state.get(client_phone, {}):
+        logger.error(f"No pending question found for gerente response. Client phone: {client_phone}, Conversation state for client: {conversation_state.get(client_phone, {})}")
         return None, None
 
     pending_question = conversation_state[client_phone]['pending_question']
@@ -206,11 +213,12 @@ def handle_gerente_response(incoming_msg, phone, conversation_state, gcs_bucket_
     # Update the global gerente_respuestas
     utils.gerente_respuestas[question] = incoming_msg
 
-    # Respond to the client
+    # Prepare response for the client
     messages = [f"Gracias por esperar. Sobre tu pregunta: {incoming_msg}"]
-    logger.debug(f"Responding to client with gerente's answer: {messages}")
+    logger.debug(f"Prepared response for client {client_phone}: {messages}")
 
     # Clear the pending question
-    del conversation_state[client_phone]['pending_question']
+    conversation_state[client_phone]['pending_question'] = None
+    logger.debug(f"Cleared pending question for client {client_phone}")
 
     return client_phone, messages
