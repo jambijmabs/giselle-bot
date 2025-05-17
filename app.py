@@ -71,6 +71,10 @@ def whatsapp():
             logger.error("Twilio client not initialized. Cannot process WhatsApp messages.")
             return "Error: Twilio client not initialized", 500
 
+        # Reload conversation state from GCS to ensure we have the latest state
+        utils.load_conversation_state(conversation_state, GCS_BUCKET_NAME, GCS_CONVERSATIONS_PATH)
+        logger.debug(f"Conversation state reloaded: {conversation_state}")
+
         # Log the entire request data for debugging
         logger.debug(f"Request headers: {dict(request.headers)}")
         logger.debug(f"Request form data: {request.form}")
@@ -96,10 +100,13 @@ def whatsapp():
 
         # Check if the message is from the gerente
         incoming_msg = request.values.get('Body', '').strip()
+        logger.debug(f"Processing message from {phone}: {incoming_msg}")
         client_phone, gerente_messages = message_handler.handle_gerente_response(incoming_msg, phone, conversation_state, GCS_BUCKET_NAME)
         if gerente_messages:
             logger.debug(f"Sending gerente response to client {client_phone}: {gerente_messages}")
             if client_phone:
+                if client_phone in conversation_state:
+                    conversation_state[client_phone]['history'].append(f"Giselle: {gerente_messages[0]}")
                 utils.send_consecutive_messages(client_phone, gerente_messages, client, WHATSAPP_SENDER_NUMBER)
                 # Save conversation state and history for the client
                 utils.save_conversation_state(conversation_state, GCS_BUCKET_NAME, GCS_CONVERSATIONS_PATH)
@@ -194,7 +201,8 @@ def whatsapp():
                     'last_incoming_time': datetime.now().isoformat(),
                     'introduced': False,
                     'project_info_shared': {},
-                    'last_mentioned_project': None
+                    'last_mentioned_project': None,
+                    'pending_question': None
                 }
             else:
                 # Preserve pending_question if it exists
