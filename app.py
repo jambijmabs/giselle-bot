@@ -115,6 +115,7 @@ def whatsapp():
                     utils.save_client_info(client_phone, conversation_state, GCS_BUCKET_NAME, GCS_CONVERSATIONS_PATH)
             else:
                 logger.error("Failed to find client phone to send gerente response.")
+            # Stop further processing since this is a gerente response
             return "Mensaje enviado"
 
         # Skip client state initialization for the gerente
