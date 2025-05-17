@@ -7,6 +7,7 @@ from datetime import datetime, timedelta
 import bot_config
 import utils
 import message_handler
+from google.cloud import storage
 
 # Configuration Section
 WHATSAPP_SENDER_NUMBER = "whatsapp:+18188732305"
@@ -118,7 +119,7 @@ def whatsapp():
         if num_media > 0:
             media_url = request.values.get('MediaUrl0', '')
             media_content_type = request.values.get('MediaContentType0', '')
-            logger.debug(f"Media detected: URL={media_url}, Content-Type={media_content_type}")
+            logger.debug(f"Media detected: {media_url}, Content-Type={media_content_type}")
 
             if 'audio' in media_content_type.lower():
                 logger.debug("Processing audio message")
@@ -128,6 +129,9 @@ def whatsapp():
                 if messages:
                     logger.debug(f"Audio message processing returned messages: {messages}")
                     utils.send_consecutive_messages(phone, messages, client, WHATSAPP_SENDER_NUMBER)
+                    utils.save_conversation_state(conversation_state, GCS_BUCKET_NAME, GCS_CONVERSATIONS_PATH)
+                    utils.save_conversation_history(phone, conversation_state[phone]['history'], GCS_BUCKET_NAME, GCS_CONVERSATIONS_PATH)
+                    utils.save_client_info(phone, conversation_state, GCS_BUCKET_NAME, GCS_CONVERSATIONS_PATH)
                     return "Mensaje enviado"
                 elif incoming_msg:
                     logger.debug(f"Audio transcribed to text: {incoming_msg}")
@@ -137,11 +141,17 @@ def whatsapp():
                     logger.error("Audio processing failed with no messages or transcription")
                     messages = ["Lo siento, no pude procesar tu mensaje de audio. ¿Puedes intentarlo de nuevo o escribirlo como texto?"]
                     utils.send_consecutive_messages(phone, messages, client, WHATSAPP_SENDER_NUMBER)
+                    utils.save_conversation_state(conversation_state, GCS_BUCKET_NAME, GCS_CONVERSATIONS_PATH)
+                    utils.save_conversation_history(phone, conversation_state[phone]['history'], GCS_BUCKET_NAME, GCS_CONVERSATIONS_PATH)
+                    utils.save_client_info(phone, conversation_state, GCS_BUCKET_NAME, GCS_CONVERSATIONS_PATH)
                     return "Mensaje enviado"
             else:
                 logger.debug(f"Media type is not audio: {media_content_type}")
                 messages = ["Lo siento, solo puedo procesar mensajes de texto o audio. ¿Puedes enviar tu mensaje de otra forma?"]
                 utils.send_consecutive_messages(phone, messages, client, WHATSAPP_SENDER_NUMBER)
+                utils.save_conversation_state(conversation_state, GCS_BUCKET_NAME, GCS_CONVERSATIONS_PATH)
+                utils.save_conversation_history(phone, conversation_state[phone]['history'], GCS_BUCKET_NAME, GCS_CONVERSATIONS_PATH)
+                utils.save_client_info(phone, conversation_state, GCS_BUCKET_NAME, GCS_CONVERSATIONS_PATH)
                 return "Mensaje enviado"
         else:
             logger.debug("No media detected, processing as text message")
@@ -187,9 +197,31 @@ def whatsapp():
                     'last_mentioned_project': None
                 }
             else:
-                conversation_state[phone]['history'] = history
-                conversation_state[phone]['messages_without_response'] = 0
-                conversation_state[phone]['last_incoming_time'] = datetime.now().isoformat()
+                # Preserve pending_question if it exists
+                existing_state = conversation_state[phone]
+                if 'pending_question' not in existing_state:
+                    existing_state['pending_question'] = None
+                conversation_state[phone] = {
+                    'history': history,
+                    'name_asked': existing_state.get('name_asked', 0),
+                    'budget_asked': existing_state.get('budget_asked', 0),
+                    'contact_time_asked': existing_state.get('contact_time_asked', 0),
+                    'messages_since_budget_ask': existing_state.get('messages_since_budget_ask', 0),
+                    'messages_without_response': 0,
+                    'preferred_time': existing_state.get('preferred_time'),
+                    'preferred_days': existing_state.get('preferred_days'),
+                    'client_name': existing_state.get('client_name'),
+                    'client_budget': existing_state.get('client_budget'),
+                    'last_contact': existing_state.get('last_contact', datetime.now().isoformat()),
+                    'recontact_attempts': existing_state.get('recontact_attempts', 0),
+                    'no_interest': existing_state.get('no_interest', False),
+                    'schedule_next': existing_state.get('schedule_next'),
+                    'last_incoming_time': datetime.now().isoformat(),
+                    'introduced': existing_state.get('introduced', False),
+                    'project_info_shared': existing_state.get('project_info_shared', {}),
+                    'last_mentioned_project': existing_state.get('last_mentioned_project'),
+                    'pending_question': existing_state.get('pending_question')
+                }
         except Exception as e:
             logger.error(f"Error initializing conversation state: {str(e)}")
             conversation_state[phone] = {
@@ -210,7 +242,8 @@ def whatsapp():
                 'last_incoming_time': datetime.now().isoformat(),
                 'introduced': False,
                 'project_info_shared': {},
-                'last_mentioned_project': None
+                'last_mentioned_project': None,
+                'pending_question': None
             }
 
         conversation_state[phone]['history'].append(f"Cliente: {incoming_msg}")
@@ -374,6 +407,25 @@ if __name__ == '__main__':
         if GERENTE_PHONE in conversation_state:
             del conversation_state[GERENTE_PHONE]
             logger.info(f"Cleared conversation state for gerente phone: {GERENTE_PHONE}")
+
+        # Delete gerente's conversation history and client info files from GCS
+        storage_client = storage.Client()
+        bucket = storage_client.bucket(GCS_BUCKET_NAME)
+        # Delete conversation history file
+        conversation_filename = utils.get_conversation_history_filename(GERENTE_PHONE)
+        conversation_blob_name = os.path.join(GCS_CONVERSATIONS_PATH, conversation_filename)
+        conversation_blob = bucket.blob(conversation_blob_name)
+        if conversation_blob.exists():
+            conversation_blob.delete()
+            logger.info(f"Deleted gerente conversation history from GCS: {conversation_blob_name}")
+        # Delete client info file
+        client_info_filename = utils.get_client_info_filename(GERENTE_PHONE)
+        client_info_blob_name = os.path.join(GCS_CONVERSATIONS_PATH, client_info_filename)
+        client_info_blob = bucket.blob(client_info_blob_name)
+        if client_info_blob.exists():
+            client_info_blob.delete()
+            logger.info(f"Deleted gerente client info from GCS: {client_info_blob_name}")
+
         utils.download_projects_from_storage(GCS_BUCKET_NAME, GCS_BASE_PATH)
         logger.info("Projects downloaded from storage")
         utils.load_projects_from_folder(GCS_BASE_PATH)
