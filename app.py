@@ -103,12 +103,17 @@ def whatsapp():
         logger.debug(f"Processing message from {phone}: {incoming_msg}")
         client_phone, gerente_messages = message_handler.handle_gerente_response(incoming_msg, phone, conversation_state, GCS_BUCKET_NAME)
         if gerente_messages:
-            logger.debug(f"Sending gerente response to client {client_phone}: {gerente_messages}")
+            logger.debug(f"Gerente response received from {phone}. Sending response to client {client_phone}: {gerente_messages}")
             if client_phone:
+                # Send the response to the client
+                utils.send_consecutive_messages(client_phone, gerente_messages, client, WHATSAPP_SENDER_NUMBER)
+                # Update the client's conversation history
                 if client_phone in conversation_state:
                     conversation_state[client_phone]['history'].append(f"Giselle: {gerente_messages[0]}")
-                utils.send_consecutive_messages(client_phone, gerente_messages, client, WHATSAPP_SENDER_NUMBER)
-                # Save conversation state and history for the client
+                    logger.debug(f"Updated client {client_phone} history: {conversation_state[client_phone]['history']}")
+                else:
+                    logger.warning(f"Client {client_phone} not found in conversation_state after gerente response.")
+                # Save the updated conversation state immediately
                 utils.save_conversation_state(conversation_state, GCS_BUCKET_NAME, GCS_CONVERSATIONS_PATH)
                 if client_phone in conversation_state:
                     utils.save_conversation_history(client_phone, conversation_state[client_phone]['history'], GCS_BUCKET_NAME, GCS_CONVERSATIONS_PATH)
@@ -116,11 +121,12 @@ def whatsapp():
             else:
                 logger.error("Failed to find client phone to send gerente response.")
             # Stop further processing since this is a gerente response
+            logger.debug(f"Completed gerente response handling for {phone}. Exiting request.")
             return "Mensaje enviado"
 
         # Skip client state initialization for the gerente
         if phone == GERENTE_PHONE:
-            logger.debug(f"Message from gerente {phone}, skipping client processing.")
+            logger.debug(f"Message from gerente {phone}, skipping client processing after gerente response handling.")
             return "Mensaje enviado"
 
         # Check if the message contains audio
