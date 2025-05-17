@@ -68,8 +68,10 @@ def load_conversation_state(conversation_state, gcs_bucket_name, gcs_conversatio
         destination_blob_name = os.path.join(gcs_conversations_path, "conversation_state.json")
         if download_from_gcs(gcs_bucket_name, destination_blob_name, local_state_file):
             with open(local_state_file, 'r') as f:
-                conversation_state.update(json.load(f))
-            logger.info("Conversation state loaded from GCS")
+                state_data = json.load(f)
+                conversation_state.clear()
+                conversation_state.update(state_data)
+            logger.info(f"Conversation state loaded from GCS: {conversation_state}")
         else:
             logger.info("No conversation state file found in GCS; starting fresh")
     except Exception as e:
@@ -84,7 +86,7 @@ def save_conversation_state(conversation_state, gcs_bucket_name, gcs_conversatio
         with open(local_state_file, 'w') as f:
             json.dump(conversation_state, f)
         upload_to_gcs(gcs_bucket_name, local_state_file, destination_blob_name)
-        logger.info("Conversation state saved to GCS")
+        logger.info(f"Conversation state saved to GCS: {conversation_state}")
     except Exception as e:
         logger.error(f"Error saving conversation state: {str(e)}")
 
