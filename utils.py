@@ -183,6 +183,29 @@ def extract_text_from_txt(txt_path):
         logger.error(f"Error al leer archivo de texto {txt_path}: {str(e)}")
         return ""
 
+def initialize_faq_files(base_path):
+    """Initialize FAQ files for all projects and general FAQ at startup."""
+    try:
+        # Create general_faq.txt if it doesn't exist
+        general_faq_path = os.path.join(base_path, "general_faq.txt")
+        if not os.path.exists(general_faq_path):
+            with open(general_faq_path, 'w', encoding='utf-8') as f:
+                pass  # Create an empty file
+            logger.info(f"Created general_faq.txt at {general_faq_path}")
+
+        # Create FAQ files for each project
+        projects = [d for d in os.listdir(base_path) if os.path.isdir(os.path.join(base_path, d)) and not d.startswith('.')]
+        for project in projects:
+            project_dir = os.path.join(base_path, project)
+            faq_path = os.path.join(project_dir, f"{project.lower()}_faq.txt")
+            if not os.path.exists(faq_path):
+                with open(faq_path, 'w', encoding='utf-8') as f:
+                    pass  # Create an empty file
+                logger.info(f"Created FAQ file for project {project} at {faq_path}")
+
+    except Exception as e:
+        logger.error(f"Error initializing FAQ files: {str(e)}", exc_info=True)
+
 def load_gerente_respuestas(base_path):
     """Load gerente responses from respuestas_gerencia.txt in the projects folder."""
     global gerente_respuestas
@@ -245,7 +268,7 @@ def save_gerente_respuesta(base_path, question, answer, gcs_bucket_name, project
         if project_key not in faq_data:
             faq_data[project_key] = {}
         faq_data[project_key][question.lower()] = answer
-        logger.debug(f"Updated faq_data[{project_key}]: {faq_data[project_key]}")
+        logger.debug(f"Updated faq_data[{project_key}]")
     except Exception as e:
         logger.error(f"Error saving gerente response to FAQ: {str(e)}", exc_info=True)
 
@@ -350,7 +373,7 @@ def load_projects_from_folder(base_path):
                 projects_data[project] = text
                 logger.info(f"Proyecto {project} procesado correctamente desde {file_path}.")
                 file_count += 1
-                logger.debug(f"Raw content of {project_file}:\n{text}")
+                logger.debug(f"Raw content of {project_file} loaded")
             else:
                 logger.warning(f"El archivo {project_file} está vacío o no se pudo leer.")
         else:
