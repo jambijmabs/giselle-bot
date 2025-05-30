@@ -77,7 +77,7 @@ def whatsapp():
 
         # Reload conversation state from GCS
         utils.load_conversation_state(conversation_state, GCS_BUCKET_NAME, GCS_CONVERSATIONS_PATH)
-        logger.debug(f"Conversation state reloaded: {conversation_state}")
+        logger.debug("Conversation state reloaded")
 
         # Log the entire request data for debugging
         logger.debug(f"Request headers: {dict(request.headers)}")
@@ -117,7 +117,7 @@ def whatsapp():
         # Load conversation history with error handling
         try:
             history = utils.load_conversation_history(phone, GCS_BUCKET_NAME, GCS_CONVERSATIONS_PATH)
-            logger.debug(f"Conversation history loaded: {history}")
+            logger.debug("Conversation history loaded")
         except Exception as e:
             logger.error(f"Failed to load conversation history: {str(e)}")
             history = []
@@ -210,7 +210,7 @@ def whatsapp():
 
             if not client_phone or not question_details:
                 logger.error("No pending question found for gerente response.")
-                logger.debug(f"Current conversation_state: {conversation_state}")
+                logger.debug("Pending questions not found in conversation state")
                 return "No pending questions to respond to", 400
 
             # Check if the gerente's response starts with "respuestafaq:"
@@ -236,12 +236,13 @@ def whatsapp():
 
             # Update the global gerente_respuestas
             utils.gerente_respuestas[question] = answer
-            logger.debug(f"Updated gerente_respuestas: {utils.gerente_respuestas}")
+            logger.debug(f"Updated gerente_respuestas")
 
             # Mark the response time to trigger delayed response
             conversation_state[client_phone]['pending_response_time'] = time.time()
             logger.debug(f"Set pending_response_time for {client_phone} to {conversation_state[client_phone]['pending_response_time']}")
 
+            # Save state and exit to prevent further processing as a client
             utils.save_conversation_state(conversation_state, GCS_BUCKET_NAME, GCS_CONVERSATIONS_PATH)
             logger.debug(f"Completed gerente response handling for {phone}. Exiting request.")
             return "Mensaje enviado"
@@ -461,12 +462,14 @@ def trigger_recontact():
 if __name__ == '__main__':
     try:
         logger.info("Starting application initialization...")
-        utils.load_conversation_state(conversation_state, GCS_BUCKET_NAME, GCS_CONVERSATIONS_PATH)
+        utils.load_conversation_state(conversation_state, GCS_BUCKET_NAME, GCS_BASE_PATH)
         logger.info("Conversation state loaded")
         utils.download_projects_from_storage(GCS_BUCKET_NAME, GCS_BASE_PATH)
         logger.info("Projects downloaded from storage")
         utils.load_projects_from_folder(GCS_BASE_PATH)
         logger.info("Projects loaded from folder")
+        utils.initialize_faq_files(GCS_BASE_PATH)  # Initialize FAQ files at startup
+        logger.info("FAQ files initialized")
         utils.load_gerente_respuestas(GCS_BASE_PATH)
         logger.info("Gerente responses loaded")
         utils.load_faq_files(GCS_BASE_PATH)
