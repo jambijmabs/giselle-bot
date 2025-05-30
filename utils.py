@@ -7,12 +7,13 @@ from datetime import datetime, timedelta
 # Configure logger
 logger = logging.getLogger(__name__)
 
-# Global dictionaries for project data
+# Global dictionaries for project data and FAQs
 projects_data = {}
 downloadable_links = {}
 downloadable_urls = {}
 downloadable_files = {}
-gerente_respuestas = {}  # New global to store gerente responses
+gerente_respuestas = {}
+faq_data = {}  # New global to store FAQ data (project -> {question: answer})
 
 # Initialize Google Cloud Storage client
 try:
@@ -32,6 +33,12 @@ def get_client_info_filename(phone):
 def get_gerente_respuestas_filename():
     """Generate the filename for gerente responses."""
     return "respuestas_gerencia.txt"
+
+def get_faq_filename(project=None):
+    """Generate the filename for FAQ based on project."""
+    if project:
+        return f"{project.lower()}_faq.txt"
+    return "general_faq.txt"
 
 def upload_to_gcs(bucket_name, source_file_path, destination_blob_name):
     """Upload a file to Google Cloud Storage."""
@@ -205,11 +212,11 @@ def load_gerente_respuestas(base_path):
         logger.error(f"Error loading gerente responses: {str(e)}")
         gerente_respuestas = {}
 
-def save_gerente_respuesta(base_path, question, answer, gcs_bucket_name):
-    """Save a new gerente response to respuestas_gerencia.txt and upload to GCS."""
-    filename = get_gerente_respuestas_filename()
-    file_path = os.path.join(base_path, filename)
-    destination_blob_name = os.path.join("PROYECTOS", filename)
+def save_gerente_respuesta(base_path, question, answer, gcs_bucket_name, project=None):
+    """Save a new gerente response to the appropriate FAQ file and upload to GCS."""
+    filename = get_faq_filename(project)
+    file_path = os.path.join(base_path, filename if project else "", filename)
+    destination_blob_name = os.path.join(base_path, filename if project else "", filename)
 
     try:
         # Append the new question and answer
@@ -220,8 +227,75 @@ def save_gerente_respuesta(base_path, question, answer, gcs_bucket_name):
 
         # Upload the updated file to GCS
         upload_to_gcs(gcs_bucket_name, file_path, destination_blob_name)
+
+        # Update the in-memory faq_data
+        project_key = project.lower() if project else "general"
+        if project_key not in faq_data:
+            faq_data[project_key] = {}
+        faq_data[project_key][question.lower()] = answer
+        logger.debug(f"Updated faq_data[{project_key}]: {faq_data[project_key]}")
     except Exception as e:
-        logger.error(f"Error saving gerente response: {str(e)}")
+        logger.error(f"Error saving gerente response to FAQ: {str(e)}")
+
+def load_faq_files(base_path):
+    """Load all FAQ files into faq_data at startup."""
+    global faq_data
+    faq_data = {}
+
+    # Load general_faq.txt
+    general_faq_path = os.path.join(base_path, "general_faq.txt")
+    if os.path.isfile(general_faq_path):
+        faq_data["general"] = {}
+        with open(general_faq_path, 'r', encoding='utf-8') as f:
+            lines = f.readlines()
+            current_question = None
+            for line in lines:
+                line = line.strip()
+                if not line:
+                    continue
+                if line.startswith("Pregunta:"):
+                    current_question = line[len("Pregunta:"):].strip()
+                elif line.startswith("Respuesta:") and current_question:
+                    answer = line[len("Respuesta:"):].strip()
+                    faq_data["general"][current_question.lower()] = answer
+                    current_question = None
+        logger.info(f"Loaded general_faq.txt: {faq_data['general']}")
+
+    # Load project-specific FAQ files
+    projects = [d for d in os.listdir(base_path) if os.path.isdir(os.path.join(base_path, d)) and not d.startswith('.')]
+    for project in projects:
+        faq_path = os.path.join(base_path, project, f"{project.lower()}_faq.txt")
+        if os.path.isfile(faq_path):
+            faq_data[project.lower()] = {}
+            with open(faq_path, 'r', encoding='utf-8') as f:
+                lines = f.readlines()
+                current_question = None
+                for line in lines:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    if line.startswith("Pregunta:"):
+                        current_question = line[len("Pregunta:"):].strip()
+                    elif line.startswith("Respuesta:") and current_question:
+                        answer = line[len("Respuesta:"):].strip()
+                        faq_data[project.lower()][current_question.lower()] = answer
+                        current_question = None
+            logger.info(f"Loaded {project.lower()}_faq.txt: {faq_data[project.lower()]}")
+
+def get_faq_answer(question, project=None):
+    """Retrieve an answer from the FAQ data."""
+    question = question.lower()
+    project_key = project.lower() if project else "general"
+    
+    # Check project-specific FAQ first
+    if project_key in faq_data and question in faq_data[project_key]:
+        return faq_data[project_key][question]
+    
+    # Check general FAQ if no project match
+    if "general" in faq_data and question in faq_data["general"]:
+        return faq_data["general"][question]
+    
+    return None
 
 def load_projects_from_folder(base_path):
     """Load project data from project-specific .txt files."""
@@ -258,7 +332,6 @@ def load_projects_from_folder(base_path):
                 projects_data[project] = text
                 logger.info(f"Proyecto {project} procesado correctamente desde {file_path}.")
                 file_count += 1
-                # Log the raw content for debugging
                 logger.debug(f"Raw content of {project_file}:\n{text}")
             else:
                 logger.warning(f"El archivo {project_file} está vacío o no se pudo leer.")
