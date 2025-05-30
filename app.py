@@ -23,6 +23,7 @@ GCS_BASE_PATH = "PROYECTOS"
 GCS_CONVERSATIONS_PATH = "CONVERSATIONS"
 STATE_FILE = "conversation_state.json"
 FAQ_RESPONSE_DELAY = 30  # 30 seconds delay for FAQ response
+FAQ_RESPONSE_PREFIX = "respuestafaq:"  # Prefix for gerente FAQ responses
 DEFAULT_PORT = 8080
 
 # Configure logging
@@ -59,9 +60,6 @@ if not OPENAI_API_KEY:
 
 # Global conversation state
 conversation_state = {}
-
-# Pending questions state (client_phone -> question details)
-pending_questions = {}
 
 # Health check endpoint for Cloud Run
 @app.route('/health', methods=['GET'])
@@ -214,19 +212,28 @@ def whatsapp():
                 logger.error("No pending question found for gerente response.")
                 return "No pending questions to respond to", 400
 
+            # Check if the gerente's response starts with "respuestafaq:"
+            if not incoming_msg.lower().startswith(FAQ_RESPONSE_PREFIX.lower()):
+                logger.debug(f"Gerente message does not start with '{FAQ_RESPONSE_PREFIX}', ignoring for FAQ: {incoming_msg}")
+                return "Mensaje enviado", 200
+
+            # Extract the actual response by removing the prefix
+            answer = incoming_msg[len(FAQ_RESPONSE_PREFIX):].strip()
+            logger.debug(f"Extracted gerente FAQ response: {answer}")
+
             # Store the gerente's response in the appropriate FAQ file
             question = question_details['question']
             mentioned_project = question_details['mentioned_project']
             utils.save_gerente_respuesta(
                 GCS_BASE_PATH,
                 question,
-                incoming_msg,
+                answer,
                 GCS_BUCKET_NAME,
                 project=mentioned_project
             )
 
             # Update the global gerente_respuestas
-            utils.gerente_respuestas[question] = incoming_msg
+            utils.gerente_respuestas[question] = answer
             logger.debug(f"Updated gerente_respuestas: {utils.gerente_respuestas}")
 
             # Mark the response time to trigger delayed response
