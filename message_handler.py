@@ -108,6 +108,7 @@ def process_message(incoming_msg, phone, conversation_state, project_info, conve
             project_context = f"sobre {mentioned_project}" if mentioned_project else "general"
             gerente_message = f"Pregunta de {client_name} {project_context}: {incoming_msg}\nRecuerda contestar con respuestafaq:"
             logger.debug(f"Preparing to send message to gerente: {gerente_message}")
+            logger.debug(f"Sending to gerente_phone: {gerente_phone} from {whatsapp_sender_number}")
             try:
                 message = twilio_client.messages.create(
                     from_=whatsapp_sender_number,
@@ -119,6 +120,7 @@ def process_message(incoming_msg, phone, conversation_state, project_info, conve
                 logger.info(f"Estado del mensaje actualizado: {updated_message.status}")
                 if updated_message.status == "failed":
                     logger.error(f"Error al enviar mensaje al gerente: {updated_message.error_code} - {updated_message.error_message}")
+                    messages = ["Lo siento, ocurrió un error al contactar al gerente. ¿En qué más puedo ayudarte?"]
             except Exception as twilio_e:
                 logger.error(f"Error sending message to gerente via Twilio: {str(twilio_e)}", exc_info=True)
                 messages = ["Lo siento, ocurrió un error al contactar al gerente. ¿En qué más puedo ayudarte?"]
