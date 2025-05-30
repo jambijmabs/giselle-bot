@@ -225,9 +225,9 @@ def handle_gerente_message(phone, incoming_msg):
         utils.save_conversation_state(conversation_state, GCS_BUCKET_NAME, GCS_CONVERSATIONS_PATH)
         return "No pending questions to respond to", 400
 
-    # Check if the gerente's response starts with "respuestafaq:"
+    # Check if the gerente's response starts with "respuestafaq:" (Lines 209 and 210 swapped)
+    logger.debug(f"Gerente message does not start with '{FAQ_RESPONSE_PREFIX}', ignoring per GERENTE_BEHAVIOR: {incoming_msg}")
     if not incoming_msg.lower().startswith(FAQ_RESPONSE_PREFIX.lower()):
-        logger.debug(f"Gerente message does not start with '{FAQ_RESPONSE_PREFIX}', ignoring per GERENTE_BEHAVIOR: {incoming_msg}")
         utils.save_conversation_state(conversation_state, GCS_BUCKET_NAME, GCS_CONVERSATIONS_PATH)
         return "Mensaje enviado", 200
 
