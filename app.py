@@ -340,6 +340,17 @@ def whatsapp():
             utils.save_client_info(phone, conversation_state, GCS_BUCKET_NAME, GCS_CONVERSATIONS_PATH)
             return "Mensaje enviado"
 
+        # Prevent gerente from being treated as a client if they send a non-FAQ message
+        if incoming_msg.lower().startswith(FAQ_RESPONSE_PREFIX.lower()):
+            logger.warning(f"Message from {phone} starts with '{FAQ_RESPONSE_PREFIX}' but sender is not gerente ({GERENTE_PHONE}). Ignoring as invalid gerente response.")
+            messages = ["Lo siento, no entiendo tu mensaje. ¿En qué puedo ayudarte con MUWAN u otro proyecto?"]
+            utils.send_consecutive_messages(phone, messages, client, WHATSAPP_SENDER_NUMBER)
+            conversation_state[phone]['history'].append(f"Giselle: {messages[0]}")
+            utils.save_conversation_state(conversation_state, GCS_BUCKET_NAME, GCS_CONVERSATIONS_PATH)
+            utils.save_conversation_history(phone, conversation_state[phone]['history'], GCS_BUCKET_NAME, GCS_CONVERSATIONS_PATH)
+            utils.save_client_info(phone, conversation_state, GCS_BUCKET_NAME, GCS_CONVERSATIONS_PATH)
+            return "Mensaje enviado"
+
         # Prepare project information
         project_info = ""
         try:
