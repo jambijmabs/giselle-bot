@@ -221,7 +221,7 @@ def handle_gerente_message(phone, incoming_msg):
 
     if not client_phone or not question_details:
         logger.error("No pending question found for gerente response.")
-        logger.debug("Pending questions not found in conversation state")
+        logger.debug(f"Current conversation state: {conversation_state}")
         utils.save_conversation_state(conversation_state, GCS_BUCKET_NAME, GCS_CONVERSATIONS_PATH)
         return "No pending questions to respond to", 400
 
@@ -461,7 +461,7 @@ if __name__ == '__main__':
             OPENAI_API_KEY, utils.projects_data, utils.downloadable_urls, TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN
         )
         logger.info("Message handler initialized")
-        port = int(os.getenv("PORT", DEFAULT_PORT))
+        port = int(os.getenv("PORT", DEFAULT_PORT))  # Use environment variable PORT, default to 8080
         service_url = os.getenv("SERVICE_URL", f"https://giselle-bot-250207106980.us-central1.run.app")
         logger.info(f"Puerto del servidor: {port}")
         logger.info(f"URL del servicio: {service_url}")
