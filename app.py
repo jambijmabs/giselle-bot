@@ -210,6 +210,7 @@ def whatsapp():
 
             if not client_phone or not question_details:
                 logger.error("No pending question found for gerente response.")
+                logger.debug(f"Current conversation_state: {conversation_state}")
                 return "No pending questions to respond to", 400
 
             # Check if the gerente's response starts with "respuestafaq:"
@@ -224,6 +225,7 @@ def whatsapp():
             # Store the gerente's response in the appropriate FAQ file
             question = question_details['question']
             mentioned_project = question_details['mentioned_project']
+            logger.debug(f"Saving gerente response for question '{question}' about project '{mentioned_project}' with answer '{answer}'")
             utils.save_gerente_respuesta(
                 GCS_BASE_PATH,
                 question,
@@ -253,6 +255,7 @@ def whatsapp():
                 question = conversation_state[phone].get('pending_question', {}).get('question')
                 mentioned_project = conversation_state[phone].get('pending_question', {}).get('mentioned_project')
                 if question:
+                    logger.debug(f"Fetching FAQ answer for question '{question}' about project '{mentioned_project}'")
                     answer = utils.get_faq_answer(question, mentioned_project)
                     if answer:
                         messages = [f"Gracias por esperar. Sobre tu pregunta: {answer}"]
@@ -373,6 +376,8 @@ def whatsapp():
                     'mentioned_project': mentioned_project
                 }
                 logger.debug(f"Set pending question for {phone}: {conversation_state[phone]['pending_question']}")
+            else:
+                logger.debug(f"No gerente contact needed for message: {incoming_msg}")
 
         # Update the last mentioned project in conversation state
         if mentioned_project:
