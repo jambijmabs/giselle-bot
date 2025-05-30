@@ -1,6 +1,8 @@
 import re
 from datetime import datetime, timedelta
 
+# Bot Configuration for Giselle
+
 # Bot Personality
 BOT_PERSONALITY = """
 Eres Giselle, una asesora de ventas de FAV Living, una empresa inmobiliaria. 
