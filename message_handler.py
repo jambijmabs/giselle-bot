@@ -28,6 +28,7 @@ def initialize_message_handler(openai_api_key, projects_data_ref, downloadable_u
     downloadable_urls = downloadable_urls_ref
     twilio_client = Client(twilio_account_sid, twilio_auth_token)
     logger.debug(f"Initialized with projects_data: {list(projects_data.keys())}")
+    logger.debug(f"Twilio client initialized with account SID: {twilio_account_sid}")
 
 def process_message(incoming_msg, phone, conversation_state, project_info, conversation_history):
     logger.debug(f"Processing message: {incoming_msg}")
@@ -36,6 +37,7 @@ def process_message(incoming_msg, phone, conversation_state, project_info, conve
 
     # Detectar proyecto en el mensaje actual
     normalized_msg = incoming_msg.lower().replace(" ", "")
+    logger.debug(f"Normalized message for project detection: {normalized_msg}")
     for project in projects_data.keys():
         if project.lower() in normalized_msg:
             mentioned_project = project
@@ -43,6 +45,7 @@ def process_message(incoming_msg, phone, conversation_state, project_info, conve
 
     # Si no hay proyecto en el mensaje, usar el último del historial
     if not mentioned_project:
+        logger.debug("No project mentioned in message; checking conversation history")
         for msg in conversation_history.split('\n'):
             for project in projects_data.keys():
                 if project.lower() in msg.lower():
@@ -94,7 +97,7 @@ def process_message(incoming_msg, phone, conversation_state, project_info, conve
             temperature=0.7
         )
         reply = response.choices[0].message.content.strip()
-        logger.debug(f"Generated response: {reply}")
+        logger.debug(f"Generated response from OpenAI: {reply}")
 
         # Check if the response indicates the bot doesn't know the answer
         if "no sé exactamente" in reply.lower() or "déjame investigarlo" in reply.lower():
@@ -104,12 +107,21 @@ def process_message(incoming_msg, phone, conversation_state, project_info, conve
             # Send message to gerente, including the project name and reminder
             project_context = f"sobre {mentioned_project}" if mentioned_project else "general"
             gerente_message = f"Pregunta de {client_name} {project_context}: {incoming_msg}\nRecuerda contestar con respuestafaq:"
-            message = twilio_client.messages.create(
-                from_=whatsapp_sender_number,
-                body=gerente_message,
-                to=gerente_phone
-            )
-            logger.info(f"Sent message to gerente: SID {message.sid}, Estado: {message.status}")
+            logger.debug(f"Preparing to send message to gerente: {gerente_message}")
+            try:
+                message = twilio_client.messages.create(
+                    from_=whatsapp_sender_number,
+                    body=gerente_message,
+                    to=gerente_phone
+                )
+                logger.info(f"Sent message to gerente: SID {message.sid}, Estado: {message.status}")
+                updated_message = twilio_client.messages(message.sid).fetch()
+                logger.info(f"Estado del mensaje actualizado: {updated_message.status}")
+                if updated_message.status == "failed":
+                    logger.error(f"Error al enviar mensaje al gerente: {updated_message.error_code} - {updated_message.error_message}")
+            except Exception as twilio_e:
+                logger.error(f"Error sending message to gerente via Twilio: {str(twilio_e)}", exc_info=True)
+                messages = ["Lo siento, ocurrió un error al contactar al gerente. ¿En qué más puedo ayudarte?"]
         else:
             # Split the reply into messages
             current_message = ""
@@ -131,7 +143,7 @@ def process_message(incoming_msg, phone, conversation_state, project_info, conve
                 messages = ["No sé exactamente, pero déjame investigarlo con más detalle para ti."]
 
     except Exception as openai_e:
-        logger.error(f"Fallo con OpenAI API: {str(openai_e)}")
+        logger.error(f"Fallo con OpenAI API: {str(openai_e)}", exc_info=True)
         messages = ["Lo siento, no entiendo bien tu pregunta."]
 
     logger.debug(f"Final messages: {messages}")
