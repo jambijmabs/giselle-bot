@@ -221,7 +221,7 @@ def handle_gerente_message(phone, incoming_msg):
 
     if not client_phone or not question_details:
         logger.error("No pending question found for gerente response.")
-        logger.debug(f"Current conversation state: {conversation_state}")
+        logger.debug("Pending questions not found in conversation state")
         utils.save_conversation_state(conversation_state, GCS_BUCKET_NAME, GCS_CONVERSATIONS_PATH)
         return "No pending questions to respond to", 400
 
@@ -445,30 +445,26 @@ def trigger_recontact():
 
 # Application Startup
 if __name__ == '__main__':
-    try:
-        logger.info("Starting application initialization...")
-        utils.load_conversation_state(conversation_state, GCS_BUCKET_NAME, GCS_BASE_PATH)
-        logger.info("Conversation state loaded")
-        utils.download_projects_from_storage(GCS_BUCKET_NAME, GCS_BASE_PATH)
-        logger.info("Projects downloaded from storage")
-        utils.load_projects_from_folder(GCS_BASE_PATH)
-        logger.info("Projects loaded from folder")
-        utils.load_gerente_respuestas(GCS_BASE_PATH)
-        logger.info("Gerente responses loaded")
-        utils.load_faq_files(GCS_BASE_PATH)
-        logger.info("FAQ files loaded")
-        message_handler.initialize_message_handler(
-            OPENAI_API_KEY, utils.projects_data, utils.downloadable_urls, TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN
-        )
-        logger.info("Message handler initialized")
-        port = int(os.getenv("PORT", DEFAULT_PORT))  # Use environment variable PORT, default to 8080
-        service_url = os.getenv("SERVICE_URL", f"https://giselle-bot-250207106980.us-central1.run.app")
-        logger.info(f"Puerto del servidor: {port}")
-        logger.info(f"URL del servicio: {service_url}")
-        logger.info(f"Configura el webhook en Twilio con: {service_url}/whatsapp")
-        logger.info("Iniciando servidor Flask...")
-        app.run(host='0.0.0.0', port=port, debug=False)
-        logger.info(f"Servidor Flask iniciado en el puerto {port}.")
-    except Exception as e:
-        logger.error(f"Failed to start application: {str(e)}")
-        sys.exit(1)
+    logger.info("Starting application initialization...")
+    utils.load_conversation_state(conversation_state, GCS_BUCKET_NAME, GCS_BASE_PATH)
+    logger.info("Conversation state loaded")
+    utils.download_projects_from_storage(GCS_BUCKET_NAME, GCS_BASE_PATH)
+    logger.info("Projects downloaded from storage")
+    utils.load_projects_from_folder(GCS_BASE_PATH)
+    logger.info("Projects loaded from folder")
+    utils.load_gerente_respuestas(GCS_BASE_PATH)
+    logger.info("Gerente responses loaded")
+    utils.load_faq_files(GCS_BASE_PATH)
+    logger.info("FAQ files loaded")
+    message_handler.initialize_message_handler(
+        OPENAI_API_KEY, utils.projects_data, utils.downloadable_urls, TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN
+    )
+    logger.info("Message handler initialized")
+    port = int(os.getenv("PORT", DEFAULT_PORT))
+    service_url = os.getenv("SERVICE_URL", f"https://giselle-bot-250207106980.us-central1.run.app")
+    logger.info(f"Puerto del servidor: {port}")
+    logger.info(f"URL del servicio: {service_url}")
+    logger.info(f"Configura el webhook en Twilio con: {service_url}/whatsapp")
+    logger.info("Iniciando servidor Flask...")
+    app.run(host='0.0.0.0', port=port, debug=False)
+    logger.info(f"Servidor Flask iniciado en el puerto {port}.")
