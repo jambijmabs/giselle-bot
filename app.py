@@ -206,8 +206,8 @@ def whatsapp():
         else:
             return handle_client_message(phone, incoming_msg)
 
-
 def handle_gerente_message(phone, incoming_msg):
+    # Added for testing line displacement
     """Handle messages from the gerente."""
     logger.info(f"Handling gerente message from {phone}: {incoming_msg}")
 
