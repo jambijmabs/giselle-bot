@@ -2,6 +2,7 @@ import os
 import logging
 import sys
 import json
+import time
 from flask import Flask, request
 from twilio.rest import Client
 from datetime import datetime, timedelta
@@ -21,7 +22,7 @@ GCS_BUCKET_NAME = "giselle-projects"
 GCS_BASE_PATH = "PROYECTOS"
 GCS_CONVERSATIONS_PATH = "CONVERSATIONS"
 STATE_FILE = "conversation_state.json"
-PENDING_QUESTIONS_FILE = "pending_questions.json"
+FAQ_RESPONSE_DELAY = 30  # 30 seconds delay for FAQ response
 DEFAULT_PORT = 8080
 
 # Configure logging
@@ -62,49 +63,12 @@ conversation_state = {}
 # Pending questions state (client_phone -> question details)
 pending_questions = {}
 
-# Initialize Google Cloud Storage client for pending questions
-storage_client = storage.Client()
-bucket = storage_client.bucket(GCS_BUCKET_NAME)
-
-def load_pending_questions():
-    """Load pending questions from GCS."""
-    try:
-        local_file = "/tmp/pending_questions.json"
-        blob_name = os.path.join(GCS_CONVERSATIONS_PATH, PENDING_QUESTIONS_FILE)
-        blob = bucket.blob(blob_name)
-        if blob.exists():
-            blob.download_to_filename(local_file)
-            with open(local_file, 'r') as f:
-                data = json.load(f)
-            logger.info(f"Loaded pending questions from GCS: {data}")
-            return data
-        else:
-            logger.info("No pending questions file found in GCS; starting fresh")
-            return {}
-    except Exception as e:
-        logger.error(f"Error loading pending questions: {str(e)}")
-        return {}
-
-def save_pending_questions(pending_questions_data):
-    """Save pending questions to GCS."""
-    try:
-        local_file = "/tmp/pending_questions.json"
-        blob_name = os.path.join(GCS_CONVERSATIONS_PATH, PENDING_QUESTIONS_FILE)
-        with open(local_file, 'w') as f:
-            json.dump(pending_questions_data, f)
-        blob = bucket.blob(blob_name)
-        blob.upload_from_filename(local_file)
-        logger.info(f"Saved pending questions to GCS: {pending_questions_data}")
-    except Exception as e:
-        logger.error(f"Error saving pending questions: {str(e)}")
-
 # Health check endpoint for Cloud Run
 @app.route('/health', methods=['GET'])
 def health():
     logger.debug("Health check endpoint called")
     return "Healthy", 200
 
-# Endpoint for client messages
 @app.route('/whatsapp', methods=['POST'])
 def whatsapp():
     logger.debug("Entered /whatsapp route")
@@ -113,12 +77,9 @@ def whatsapp():
             logger.error("Twilio client not initialized. Cannot process WhatsApp messages.")
             return "Error: Twilio client not initialized", 500
 
-        # Reload conversation state and pending questions from GCS
+        # Reload conversation state from GCS
         utils.load_conversation_state(conversation_state, GCS_BUCKET_NAME, GCS_CONVERSATIONS_PATH)
-        global pending_questions
-        pending_questions = load_pending_questions()
         logger.debug(f"Conversation state reloaded: {conversation_state}")
-        logger.debug(f"Pending questions reloaded: {pending_questions}")
 
         # Log the entire request data for debugging
         logger.debug(f"Request headers: {dict(request.headers)}")
@@ -143,13 +104,11 @@ def whatsapp():
             logger.error(f"Invalid phone number format after normalization: {repr(phone)}")
             return "Error: Invalid phone number format", 400
 
-        # Ensure this endpoint does not process gerente messages
-        if phone == GERENTE_PHONE:
-            logger.warning(f"Gerente message received on /whatsapp endpoint: {phone}. Redirecting to /gerente.")
-            return "Message should be sent to /gerente endpoint", 400
+        is_gerente = phone == GERENTE_PHONE
+        logger.debug(f"Is sender the gerente? {is_gerente} (Role: {GERENTE_ROLE}, Phone: {GERENTE_PHONE})")
 
         incoming_msg = request.values.get('Body', '').strip()
-        logger.debug(f"Processing message from client {phone}: {incoming_msg}")
+        logger.debug(f"Processing message from {phone}: {incoming_msg}")
 
         if not incoming_msg or not phone:
             logger.error("No se encontraron 'Body' o 'From' en la solicitud")
@@ -186,7 +145,9 @@ def whatsapp():
                     'last_incoming_time': datetime.now().isoformat(),
                     'introduced': False,
                     'project_info_shared': {},
-                    'last_mentioned_project': None
+                    'last_mentioned_project': None,
+                    'pending_question': None,
+                    'pending_response_time': None
                 }
             else:
                 existing_state = conversation_state[phone]
@@ -208,7 +169,9 @@ def whatsapp():
                     'last_incoming_time': datetime.now().isoformat(),
                     'introduced': existing_state.get('introduced', False),
                     'project_info_shared': existing_state.get('project_info_shared', {}),
-                    'last_mentioned_project': existing_state.get('last_mentioned_project')
+                    'last_mentioned_project': existing_state.get('last_mentioned_project'),
+                    'pending_question': existing_state.get('pending_question'),
+                    'pending_response_time': existing_state.get('pending_response_time')
                 }
         except Exception as e:
             logger.error(f"Error initializing conversation state: {str(e)}")
@@ -230,9 +193,82 @@ def whatsapp():
                 'last_incoming_time': datetime.now().isoformat(),
                 'introduced': False,
                 'project_info_shared': {},
-                'last_mentioned_project': None
+                'last_mentioned_project': None,
+                'pending_question': None,
+                'pending_response_time': None
             }
 
+        # Handle gerente response
+        if is_gerente:
+            logger.info(f"Message identified as coming from gerente ({phone})")
+            # Find a pending question to match this response
+            client_phone = None
+            question_details = None
+            for c_phone, state in conversation_state.items():
+                if state.get('pending_question') and state.get('pending_response_time'):
+                    client_phone = c_phone
+                    question_details = state['pending_question']
+                    break
+
+            if not client_phone or not question_details:
+                logger.error("No pending question found for gerente response.")
+                return "No pending questions to respond to", 400
+
+            # Store the gerente's response in the appropriate FAQ file
+            question = question_details['question']
+            mentioned_project = question_details['mentioned_project']
+            utils.save_gerente_respuesta(
+                GCS_BASE_PATH,
+                question,
+                incoming_msg,
+                GCS_BUCKET_NAME,
+                project=mentioned_project
+            )
+
+            # Update the global gerente_respuestas
+            utils.gerente_respuestas[question] = incoming_msg
+            logger.debug(f"Updated gerente_respuestas: {utils.gerente_respuestas}")
+
+            # Mark the response time to trigger delayed response
+            conversation_state[client_phone]['pending_response_time'] = time.time()
+            logger.debug(f"Set pending_response_time for {client_phone} to {conversation_state[client_phone]['pending_response_time']}")
+
+            utils.save_conversation_state(conversation_state, GCS_BUCKET_NAME, GCS_CONVERSATIONS_PATH)
+            logger.debug(f"Completed gerente response handling for {phone}. Exiting request.")
+            return "Mensaje enviado"
+
+        # Check for pending responses (client side)
+        if conversation_state[phone].get('pending_response_time'):
+            current_time = time.time()
+            elapsed_time = current_time - conversation_state[phone]['pending_response_time']
+            if elapsed_time >= FAQ_RESPONSE_DELAY:
+                # Enough time has passed; fetch the response from FAQ
+                question = conversation_state[phone].get('pending_question', {}).get('question')
+                mentioned_project = conversation_state[phone].get('pending_question', {}).get('mentioned_project')
+                if question:
+                    answer = utils.get_faq_answer(question, mentioned_project)
+                    if answer:
+                        messages = [f"Gracias por esperar. Sobre tu pregunta: {answer}"]
+                        utils.send_consecutive_messages(phone, messages, client, WHATSAPP_SENDER_NUMBER)
+                        conversation_state[phone]['history'].append(f"Giselle: {messages[0]}")
+                        conversation_state[phone]['pending_question'] = None
+                        conversation_state[phone]['pending_response_time'] = None
+                        logger.debug(f"Sent gerente response to client {phone}: {messages}")
+                    else:
+                        logger.error(f"Could not find answer for question '{question}' in FAQ.")
+                        messages = ["Lo siento, no pude encontrar una respuesta. ¿En qué más puedo ayudarte?"]
+                        utils.send_consecutive_messages(phone, messages, client, WHATSAPP_SENDER_NUMBER)
+                        conversation_state[phone]['history'].append(f"Giselle: {messages[0]}")
+                        conversation_state[phone]['pending_question'] = None
+                        conversation_state[phone]['pending_response_time'] = None
+                else:
+                    logger.error(f"No pending question found for {phone} despite pending_response_time.")
+                    conversation_state[phone]['pending_response_time'] = None
+            else:
+                logger.debug(f"Waiting for FAQ response delay to complete for {phone}. Elapsed time: {elapsed_time} seconds")
+                return "Waiting for gerente response", 200
+
+        # Handle client message
         conversation_state[phone]['history'].append(f"Cliente: {incoming_msg}")
         conversation_state[phone]['history'] = conversation_state[phone]['history'][-10:]
         conversation_state[phone]['last_contact'] = datetime.now().isoformat()
@@ -310,32 +346,37 @@ def whatsapp():
         # Build conversation history
         conversation_history = "\n".join(conversation_state[phone]['history'])
 
-        # Process the message and generate a response
-        messages, mentioned_project = message_handler.process_message(
-            incoming_msg, phone, conversation_state, project_info, conversation_history
-        )
-        logger.debug(f"Messages generated: {messages}")
-        logger.debug(f"Mentioned project after processing: {mentioned_project}")
-
-        # Check if the bot needs to contact the gerente
-        if "Permíteme, déjame revisar esto con el gerente." in messages:
-            pending_questions[phone] = {
-                'question': incoming_msg,
-                'mentioned_project': mentioned_project
-            }
-            save_pending_questions(pending_questions)
-            logger.debug(f"Added pending question for {phone}: {pending_questions[phone]}")
+        # Check FAQ for an existing answer
+        mentioned_project = conversation_state[phone].get('last_mentioned_project')
+        faq_answer = utils.get_faq_answer(incoming_msg, mentioned_project)
+        if faq_answer:
+            messages = [f"Según lo que ya hemos investigado: {faq_answer}"]
         else:
-            # Update the last mentioned project in conversation state
-            if mentioned_project:
-                conversation_state[phone]['last_mentioned_project'] = mentioned_project
-                logger.debug(f"Updated last_mentioned_project to: {mentioned_project}")
+            # Process the message and generate a response
+            messages, mentioned_project = message_handler.process_message(
+                incoming_msg, phone, conversation_state, project_info, conversation_history
+            )
+            logger.debug(f"Messages generated: {messages}")
+            logger.debug(f"Mentioned project after processing: {mentioned_project}")
 
-            utils.send_consecutive_messages(phone, messages, client, WHATSAPP_SENDER_NUMBER)
+            # If the bot needs to contact the gerente
+            if "Permíteme, déjame revisar esto con el gerente." in messages:
+                conversation_state[phone]['pending_question'] = {
+                    'question': incoming_msg,
+                    'mentioned_project': mentioned_project
+                }
+                logger.debug(f"Set pending question for {phone}: {conversation_state[phone]['pending_question']}")
 
-            for msg in messages:
-                conversation_state[phone]['history'].append(f"Giselle: {msg}")
-            conversation_state[phone]['history'] = conversation_state[phone]['history'][-10:]
+        # Update the last mentioned project in conversation state
+        if mentioned_project:
+            conversation_state[phone]['last_mentioned_project'] = mentioned_project
+            logger.debug(f"Updated last_mentioned_project to: {mentioned_project}")
+
+        utils.send_consecutive_messages(phone, messages, client, WHATSAPP_SENDER_NUMBER)
+
+        for msg in messages:
+            conversation_state[phone]['history'].append(f"Giselle: {msg}")
+        conversation_state[phone]['history'] = conversation_state[phone]['history'][-10:]
 
         utils.save_conversation_state(conversation_state, GCS_BUCKET_NAME, GCS_CONVERSATIONS_PATH)
         utils.save_conversation_history(phone, conversation_state[phone]['history'], GCS_BUCKET_NAME, GCS_CONVERSATIONS_PATH)
@@ -366,106 +407,6 @@ def whatsapp():
             utils.save_client_info(phone, conversation_state, GCS_BUCKET_NAME, GCS_CONVERSATIONS_PATH)
         except Exception as twilio_e:
             logger.error(f"Error sending fallback message: {str(twilio_e)}")
-        return "Error interno del servidor", 500
-
-# Endpoint for gerente messages
-@app.route('/gerente', methods=['POST'])
-def gerente():
-    logger.debug("Entered /gerente route")
-    try:
-        if client is None:
-            logger.error("Twilio client not initialized. Cannot process WhatsApp messages.")
-            return "Error: Twilio client not initialized", 500
-
-        # Reload pending questions from GCS
-        global pending_questions
-        pending_questions = load_pending_questions()
-        logger.debug(f"Pending questions reloaded: {pending_questions}")
-
-        # Log the entire request data for debugging
-        logger.debug(f"Request headers: {dict(request.headers)}")
-        logger.debug(f"Request form data: {request.form}")
-        logger.debug(f"Request values: {dict(request.values)}")
-
-        logger.debug("Extracting message content")
-        phone = request.values.get('From', '')
-        logger.debug(f"From phone: {phone}")
-
-        # Normalize the phone number early
-        phone = phone.strip()
-        if not phone.startswith('whatsapp:+'):
-            if phone.startswith('whatsapp:'):
-                phone = f"whatsapp:+{phone[len('whatsapp:'):]}"
-            else:
-                phone = f"whatsapp:+{phone}"
-
-        if not phone.startswith('whatsapp:+'):
-            logger.error(f"Invalid phone number format after normalization: {repr(phone)}")
-            return "Error: Invalid phone number format", 400
-
-        if phone != GERENTE_PHONE:
-            logger.warning(f"Non-gerente message received on /gerente endpoint: {phone}. Redirecting to /whatsapp.")
-            return "Message should be sent to /whatsapp endpoint", 400
-
-        incoming_msg = request.values.get('Body', '').strip()
-        logger.debug(f"Processing message from gerente {phone}: {incoming_msg}")
-
-        if not incoming_msg:
-            logger.error("No se encontró 'Body' en la solicitud")
-            return "Error: Solicitud incompleta", 400
-
-        logger.info(f"Mensaje recibido de gerente {phone}: {incoming_msg}")
-
-        # Find a pending question to match this response
-        client_phone = None
-        question_details = None
-        for c_phone, details in list(pending_questions.items()):
-            client_phone = c_phone
-            question_details = details
-            break
-
-        if not client_phone or not question_details:
-            logger.error("No pending questions found to match gerente response.")
-            return "No pending questions to respond to", 400
-
-        # Store the gerente's response
-        question = question_details['question']
-        mentioned_project = question_details['mentioned_project']
-        utils.save_gerente_respuesta(
-            "PROYECTOS",
-            question,
-            incoming_msg,
-            GCS_BUCKET_NAME
-        )
-        logger.debug(f"Saved gerente response for question '{question}' with answer '{incoming_msg}'")
-
-        # Update the global gerente_respuestas
-        utils.gerente_respuestas[question] = incoming_msg
-        logger.debug(f"Updated gerente_respuestas: {utils.gerente_respuestas}")
-
-        # Prepare and send response to the client
-        messages = [f"Gracias por esperar. Sobre tu pregunta: {incoming_msg}"]
-        logger.debug(f"Sending gerente response to client {client_phone}: {messages}")
-        utils.send_consecutive_messages(client_phone, messages, client, WHATSAPP_SENDER_NUMBER)
-
-        # Update the client's conversation history
-        utils.load_conversation_state(conversation_state, GCS_BUCKET_NAME, GCS_CONVERSATIONS_PATH)
-        if client_phone in conversation_state:
-            conversation_state[client_phone]['history'].append(f"Giselle: {messages[0]}")
-            utils.save_conversation_history(client_phone, conversation_state[client_phone]['history'], GCS_BUCKET_NAME, GCS_CONVERSATIONS_PATH)
-            utils.save_client_info(client_phone, conversation_state, GCS_BUCKET_NAME, GCS_CONVERSATIONS_PATH)
-        else:
-            logger.warning(f"Client {client_phone} not found in conversation_state; history not updated.")
-
-        # Remove the pending question
-        del pending_questions[client_phone]
-        save_pending_questions(pending_questions)
-        logger.debug(f"Removed pending question for {client_phone}. Updated pending_questions: {pending_questions}")
-
-        logger.debug("Gerente response processed successfully")
-        return "Mensaje enviado"
-    except Exception as e:
-        logger.error(f"Error inesperado en /gerente: {str(e)}", exc_info=True)
         return "Error interno del servidor", 500
 
 @app.route('/', methods=['GET'])
@@ -499,30 +440,14 @@ if __name__ == '__main__':
         logger.info("Starting application initialization...")
         utils.load_conversation_state(conversation_state, GCS_BUCKET_NAME, GCS_CONVERSATIONS_PATH)
         logger.info("Conversation state loaded")
-        pending_questions = load_pending_questions()
-        logger.info("Pending questions loaded")
-
-        # Delete gerente's conversation history and client info files from GCS
-        bucket = storage_client.bucket(GCS_BUCKET_NAME)
-        conversation_filename = utils.get_conversation_history_filename(GERENTE_PHONE)
-        conversation_blob_name = os.path.join(GCS_CONVERSATIONS_PATH, conversation_filename)
-        conversation_blob = bucket.blob(conversation_blob_name)
-        if conversation_blob.exists():
-            conversation_blob.delete()
-            logger.info(f"Deleted gerente conversation history from GCS: {conversation_blob_name}")
-        client_info_filename = utils.get_client_info_filename(GERENTE_PHONE)
-        client_info_blob_name = os.path.join(GCS_CONVERSATIONS_PATH, client_info_filename)
-        client_info_blob = bucket.blob(client_info_blob_name)
-        if client_info_blob.exists():
-            client_info_blob.delete()
-            logger.info(f"Deleted gerente client info from GCS: {client_info_blob_name}")
-
         utils.download_projects_from_storage(GCS_BUCKET_NAME, GCS_BASE_PATH)
         logger.info("Projects downloaded from storage")
         utils.load_projects_from_folder(GCS_BASE_PATH)
         logger.info("Projects loaded from folder")
         utils.load_gerente_respuestas(GCS_BASE_PATH)
         logger.info("Gerente responses loaded")
+        utils.load_faq_files(GCS_BASE_PATH)
+        logger.info("FAQ files loaded")
         message_handler.initialize_message_handler(
             OPENAI_API_KEY, utils.projects_data, utils.downloadable_urls, TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN
         )
@@ -531,8 +456,7 @@ if __name__ == '__main__':
         service_url = os.getenv("SERVICE_URL", f"https://giselle-bot-250207106980.us-central1.run.app")
         logger.info(f"Puerto del servidor: {port}")
         logger.info(f"URL del servicio: {service_url}")
-        logger.info(f"Configura el webhook en Twilio para clientes con: {service_url}/whatsapp")
-        logger.info(f"Configura el webhook en Twilio para gerente con: {service_url}/gerente")
+        logger.info(f"Configura el webhook en Twilio con: {service_url}/whatsapp")
         logger.info("Iniciando servidor Flask...")
         app.run(host='0.0.0.0', port=port, debug=False)
         logger.info(f"Servidor Flask iniciado en el puerto {port}.")
