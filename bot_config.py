@@ -1,6 +1,3 @@
-import re
-from datetime import datetime, timedelta
-
 # Bot Configuration for Giselle
 
 from datetime import datetime, timedelta
