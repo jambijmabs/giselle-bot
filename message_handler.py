@@ -101,8 +101,9 @@ def process_message(incoming_msg, phone, conversation_state, project_info, conve
             logger.info(f"Bot cannot answer: {incoming_msg}. Contacting gerente.")
             messages.append("Permíteme, déjame revisar esto con el gerente.")
             
-            # Send message to gerente
-            gerente_message = f"Pregunta de {client_name} sobre {mentioned_project}: {incoming_msg}"
+            # Send message to gerente, including the project name and reminder
+            project_context = f"sobre {mentioned_project}" if mentioned_project else "general"
+            gerente_message = f"Pregunta de {client_name} {project_context}: {incoming_msg}\nRecuerda contestar con respuestafaq:"
             message = twilio_client.messages.create(
                 from_=whatsapp_sender_number,
                 body=gerente_message,
