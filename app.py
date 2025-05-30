@@ -1,3 +1,4 @@
+# New comment to force a new image digest - May 30, 2025
 import os
 import logging
 import sys
@@ -26,7 +27,7 @@ FAQ_RESPONSE_DELAY = 30  # 30 seconds delay for FAQ response
 FAQ_RESPONSE_PREFIX = "respuestafaq:"  # Prefix for gerente FAQ responses
 DEFAULT_PORT = 8080
 
-# Configure logging
+# Configure logging to stdout and a file
 logging.basicConfig(
     level=logging.DEBUG,
     format='%(asctime)s - %(levelname)s - %(message)s',
@@ -116,12 +117,12 @@ def whatsapp():
         logger.info(f"Mensaje recibido de {phone}: {incoming_msg}")
 
         # Load conversation history with error handling
+        history = []
         try:
             history = utils.load_conversation_history(phone, GCS_BUCKET_NAME, GCS_CONVERSATIONS_PATH)
             logger.debug("Conversation history loaded")
         except Exception as e:
             logger.error(f"Failed to load conversation history: {str(e)}")
-            history = []
 
         # Initialize conversation state with error handling
         try:
@@ -203,10 +204,8 @@ def whatsapp():
         # Bifurcate the flow based on whether the sender is the gerente or a client
         if is_gerente:
             return handle_gerente_message(phone, incoming_msg)
-        else:
-            return handle_client_message(phone, incoming_msg)
+        return handle_client_message(phone, incoming_msg)
 
-    # Added for testing line displacement
 def handle_gerente_message(phone, incoming_msg):
     # Added for testing line displacement
     """Handle messages from the gerente."""
@@ -386,11 +385,16 @@ def handle_client_message(phone, incoming_msg):
         messages = [f"Según lo que ya hemos investigado: {faq_answer}"]
     else:
         # Process the message and generate a response
-        messages, mentioned_project = message_handler.process_message(
-            incoming_msg, phone, conversation_state, project_info, conversation_history
-        )
-        logger.debug(f"Messages generated: {messages}")
-        logger.debug(f"Mentioned project after processing: {mentioned_project}")
+        try:
+            messages, mentioned_project = message_handler.process_message(
+                incoming_msg, phone, conversation_state, project_info, conversation_history
+            )
+            logger.debug(f"Messages generated: {messages}")
+            logger.debug(f"Mentioned project after processing: {mentioned_project}")
+        except Exception as process_error:
+            logger.error(f"Error processing message: {str(process_error)}")
+            messages = ["Lo siento, ocurrió un error al procesar tu mensaje. Por favor, intenta de nuevo."]
+            mentioned_project = None
 
         # If the bot needs to contact the gerente
         if "Permíteme, déjame revisar esto con el gerente." in messages:
