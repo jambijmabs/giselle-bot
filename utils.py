@@ -215,10 +215,22 @@ def load_gerente_respuestas(base_path):
 def save_gerente_respuesta(base_path, question, answer, gcs_bucket_name, project=None):
     """Save a new gerente response to the appropriate FAQ file and upload to GCS."""
     filename = get_faq_filename(project)
-    file_path = os.path.join(base_path, filename if project else "", filename)
-    destination_blob_name = os.path.join(base_path, filename if project else "", filename)
+    project_dir = os.path.join(base_path, project.lower() if project else "")
+    file_path = os.path.join(project_dir, filename)
+    destination_blob_name = os.path.join(base_path, project.lower() if project else "", filename)
 
     try:
+        # Ensure the directory exists
+        if not os.path.exists(project_dir):
+            os.makedirs(project_dir)
+            logger.info(f"Created directory {project_dir} for FAQ file")
+
+        # Ensure the file exists
+        if not os.path.exists(file_path):
+            with open(file_path, 'w', encoding='utf-8') as f:
+                pass  # Create an empty file
+            logger.info(f"Created FAQ file {file_path}")
+
         # Append the new question and answer
         with open(file_path, 'a', encoding='utf-8') as f:
             f.write(f"Pregunta: {question}\n")
@@ -235,7 +247,7 @@ def save_gerente_respuesta(base_path, question, answer, gcs_bucket_name, project
         faq_data[project_key][question.lower()] = answer
         logger.debug(f"Updated faq_data[{project_key}]: {faq_data[project_key]}")
     except Exception as e:
-        logger.error(f"Error saving gerente response to FAQ: {str(e)}")
+        logger.error(f"Error saving gerente response to FAQ: {str(e)}", exc_info=True)
 
 def load_faq_files(base_path):
     """Load all FAQ files into faq_data at startup."""
@@ -260,6 +272,9 @@ def load_faq_files(base_path):
                     faq_data["general"][current_question.lower()] = answer
                     current_question = None
         logger.info(f"Loaded general_faq.txt: {faq_data['general']}")
+    else:
+        logger.info(f"No general_faq.txt found at {general_faq_path}; starting fresh")
+        faq_data["general"] = {}
 
     # Load project-specific FAQ files
     projects = [d for d in os.listdir(base_path) if os.path.isdir(os.path.join(base_path, d)) and not d.startswith('.')]
@@ -281,6 +296,9 @@ def load_faq_files(base_path):
                         faq_data[project.lower()][current_question.lower()] = answer
                         current_question = None
             logger.info(f"Loaded {project.lower()}_faq.txt: {faq_data[project.lower()]}")
+        else:
+            logger.info(f"No FAQ file found for project {project}; starting fresh")
+            faq_data[project.lower()] = {}
 
 def get_faq_answer(question, project=None):
     """Retrieve an answer from the FAQ data."""
