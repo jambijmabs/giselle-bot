@@ -145,7 +145,8 @@ def whatsapp():
                     'project_info_shared': {},
                     'last_mentioned_project': None,
                     'pending_question': None,
-                    'pending_response_time': None
+                    'pending_response_time': None,
+                    'is_gerente': is_gerente  # Add flag to explicitly mark if this is the gerente
                 }
             else:
                 existing_state = conversation_state[phone]
@@ -158,8 +159,8 @@ def whatsapp():
                     'messages_without_response': 0,
                     'preferred_time': existing_state.get('preferred_time'),
                     'preferred_days': existing_state.get('preferred_days'),
-                    'client_name': existing_state.get('client_name'),
-                    'client_budget': existing_state.get('client_budget'),
+                    'client_name': None if is_gerente else existing_state.get('client_name'),  # Clear client data for gerente
+                    'client_budget': None if is_gerente else existing_state.get('client_budget'),
                     'last_contact': existing_state.get('last_contact', datetime.now().isoformat()),
                     'recontact_attempts': existing_state.get('recontact_attempts', 0),
                     'no_interest': existing_state.get('no_interest', False),
@@ -169,7 +170,8 @@ def whatsapp():
                     'project_info_shared': existing_state.get('project_info_shared', {}),
                     'last_mentioned_project': existing_state.get('last_mentioned_project'),
                     'pending_question': existing_state.get('pending_question'),
-                    'pending_response_time': existing_state.get('pending_response_time')
+                    'pending_response_time': existing_state.get('pending_response_time'),
+                    'is_gerente': is_gerente
                 }
         except Exception as e:
             logger.error(f"Error initializing conversation state: {str(e)}")
@@ -193,7 +195,8 @@ def whatsapp():
                 'project_info_shared': {},
                 'last_mentioned_project': None,
                 'pending_question': None,
-                'pending_response_time': None
+                'pending_response_time': None,
+                'is_gerente': is_gerente
             }
 
         # Handle gerente response
@@ -203,7 +206,7 @@ def whatsapp():
             client_phone = None
             question_details = None
             for c_phone, state in conversation_state.items():
-                if state.get('pending_question'):
+                if state.get('pending_question') and not state.get('is_gerente', False):
                     client_phone = c_phone
                     question_details = state['pending_question']
                     break
@@ -211,11 +214,13 @@ def whatsapp():
             if not client_phone or not question_details:
                 logger.error("No pending question found for gerente response.")
                 logger.debug("Pending questions not found in conversation state")
+                utils.save_conversation_state(conversation_state, GCS_BUCKET_NAME, GCS_CONVERSATIONS_PATH)
                 return "No pending questions to respond to", 400
 
             # Check if the gerente's response starts with "respuestafaq:"
             if not incoming_msg.lower().startswith(FAQ_RESPONSE_PREFIX.lower()):
                 logger.debug(f"Gerente message does not start with '{FAQ_RESPONSE_PREFIX}', ignoring per GERENTE_BEHAVIOR: {incoming_msg}")
+                utils.save_conversation_state(conversation_state, GCS_BUCKET_NAME, GCS_CONVERSATIONS_PATH)
                 return "Mensaje enviado", 200
 
             # Extract the actual response by removing the prefix
@@ -277,6 +282,9 @@ def whatsapp():
                     conversation_state[phone]['pending_response_time'] = None
             else:
                 logger.debug(f"Waiting for FAQ response delay to complete for {phone}. Elapsed time: {elapsed_time} seconds")
+                utils.save_conversation_state(conversation_state, GCS_BUCKET_NAME, GCS_CONVERSATIONS_PATH)
+                utils.save_conversation_history(phone, conversation_state[phone]['history'], GCS_BUCKET_NAME, GCS_CONVERSATIONS_PATH)
+                utils.save_client_info(phone, conversation_state, GCS_BUCKET_NAME, GCS_CONVERSATIONS_PATH)
                 return "Waiting for gerente response", 200
 
         # Handle client message
@@ -468,8 +476,6 @@ if __name__ == '__main__':
         logger.info("Projects downloaded from storage")
         utils.load_projects_from_folder(GCS_BASE_PATH)
         logger.info("Projects loaded from folder")
-        utils.initialize_faq_files(GCS_BASE_PATH)  # Initialize FAQ files at startup
-        logger.info("FAQ files initialized")
         utils.load_gerente_respuestas(GCS_BASE_PATH)
         logger.info("Gerente responses loaded")
         utils.load_faq_files(GCS_BASE_PATH)
