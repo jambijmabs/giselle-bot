@@ -9,6 +9,7 @@ import os
 import utils
 from twilio.rest import Client
 from datetime import datetime, timedelta
+import twilio  # Importar twilio para verificar la versión
 
 # Configure logger
 logger = logging.getLogger(__name__)
@@ -32,6 +33,7 @@ def initialize_message_handler(openai_api_key, projects_data_ref, downloadable_u
     try:
         twilio_client = Client(twilio_account_sid, twilio_auth_token)
         logger.debug(f"Twilio client initialized with account SID: {twilio_account_sid}")
+        logger.info(f"Using twilio-python version: {twilio.__version__}")
     except Exception as e:
         logger.error(f"Failed to initialize Twilio client: {str(e)}", exc_info=True)
         twilio_client = None
