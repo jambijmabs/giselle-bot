@@ -95,7 +95,7 @@ def handle_gerente_message(phone, incoming_msg):
             logger.error("Failed to find client phone to send gerente response.")
     else:
         logger.debug(f"No valid gerente response to process: {incoming_msg}")
-        # Do not continue to handle_client_message; simply return
+        # Simply return without further processing
         return "Mensaje recibido", 200
 
     return "Mensaje enviado", 200
@@ -303,8 +303,13 @@ def whatsapp():
             logger.error(f"Invalid phone number format after normalization: {repr(phone)}")
             return "Error: Invalid phone number format", 400
 
-        is_gerente = phone == GERENTE_PHONE
-        logger.debug(f"Is sender the gerente? {is_gerente} (Role: {GERENTE_ROLE}, Phone: {GERENTE_PHONE})")
+        # Normalize GERENTE_PHONE for comparison
+        gerente_phone_normalized = GERENTE_PHONE.strip()
+        if not gerente_phone_normalized.startswith('whatsapp:+'):
+            gerente_phone_normalized = f"whatsapp:+{gerente_phone_normalized}"
+
+        is_gerente = phone == gerente_phone_normalized
+        logger.debug(f"Comparing phone numbers: phone='{phone}', GERENTE_PHONE='{gerente_phone_normalized}', is_gerente={is_gerente}")
 
         incoming_msg = request.values.get('Body', '').strip()
         logger.debug(f"Processing message from {phone}: {incoming_msg}")
@@ -394,9 +399,13 @@ def whatsapp():
 
         # Route the message to the appropriate handler
         if is_gerente:
-            return handle_gerente_message(phone, incoming_msg)
+            result = handle_gerente_message(phone, incoming_msg)
+            logger.debug(f"Gerente message handled: {result}")
+            return result
         else:
-            return handle_client_message(phone, incoming_msg)
+            result = handle_client_message(phone, incoming_msg)
+            logger.debug(f"Client message handled: {result}")
+            return result
 
     except Exception as e:
         logger.error(f"Error inesperado en /whatsapp: {str(e)}", exc_info=True)
