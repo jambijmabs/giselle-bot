@@ -1,8 +1,6 @@
 import re
 import logging
 import requests
-import json
-import string
 from openai import OpenAI
 import bot_config
 import traceback
@@ -203,7 +201,7 @@ def process_message(incoming_msg, phone, conversation_state, project_info, conve
                 window_active = check_whatsapp_window(gerente_phone)
                 logger.debug(f"WhatsApp window active: {window_active}")
 
-                # Enviar mensaje libre al gerente (eliminamos el uso de plantillas)
+                # Enviar mensaje libre al gerente
                 message = twilio_client.messages.create(
                     from_=whatsapp_sender_number,
                     body=gerente_message,
