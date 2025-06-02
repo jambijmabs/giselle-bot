@@ -64,13 +64,23 @@ conversation_state = {}
 def handle_gerente_message(phone, incoming_msg):
     """Handle messages from the gerente."""
     logger.info(f"Handling message from gerente ({phone})")
+
+    # Check if the gerente is requesting a report of interested clients
+    if "reporte de interesados" in incoming_msg.lower():
+        logger.info(f"Gerente ({phone}) requested a report of interested clients")
+        report_messages = utils.generate_interested_report(conversation_state)
+        utils.send_consecutive_messages(phone, report_messages, client, WHATSAPP_SENDER_NUMBER)
+        logger.debug(f"Sent report to gerente: {report_messages}")
+        return "Reporte enviado", 200
+
+    # Process the gerente's response to a client's question
     client_phone, gerente_messages = message_handler.handle_gerente_response(incoming_msg, phone, conversation_state, GCS_BUCKET_NAME)
     if gerente_messages:
         logger.debug(f"Gerente response received from {phone}. Sending response to client {client_phone}: {gerente_messages}")
         if client_phone:
             # Send the response to the client
             utils.send_consecutive_messages(client_phone, gerente_messages, client, WHATSAPP_SENDER_NUMBER)
-            # Update the client's conversation history 
+            # Update the client's conversation history
             if client_phone in conversation_state:
                 conversation_state[client_phone]['history'].append(f"Giselle: {gerente_messages[0]}")
                 conversation_state[client_phone]['pending_response_time'] = None
@@ -83,6 +93,11 @@ def handle_gerente_message(phone, incoming_msg):
                 logger.warning(f"Client {client_phone} not found in conversation_state after gerente response.")
         else:
             logger.error("Failed to find client phone to send gerente response.")
+    else:
+        logger.debug(f"No valid gerente response to process: {incoming_msg}")
+        # Do not continue to handle_client_message; simply return
+        return "Mensaje recibido", 200
+
     return "Mensaje enviado", 200
 
 def handle_client_message(phone, incoming_msg):
