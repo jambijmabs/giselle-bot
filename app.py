@@ -13,8 +13,8 @@ from google.cloud import storage
 
 # Configuration Section
 WHATSAPP_SENDER_NUMBER = "whatsapp:+18188732305"
-# Lista de números de gerentes (solo el número en formato E.164, sin prefijo whatsapp:)
-GERENTE_NUMBERS = ["+5218110665094"]  # Número del gerente en formato E.164
+# Lista de números de gerentes (solo el número en formato E.164, con prefijo +)
+GERENTE_NUMBERS = ["+5218110665094"]  # Número del gerente corregido
 GERENTE_ROLE = bot_config.GERENTE_ROLE
 TWILIO_ACCOUNT_SID = os.getenv('TWILIO_ACCOUNT_SID')
 TWILIO_AUTH_TOKEN = os.getenv('TWILIO_AUTH_TOKEN')
@@ -282,9 +282,12 @@ def whatsapp():
         logger.debug("Conversation state reloaded")
 
         # Log request data for debugging
+        logger.debug(f"Request headers: {dict(request.headers)}")
         logger.debug(f"Request form data: {request.form}")
+        logger.debug(f"Request values: {dict(request.values)}")
 
         # Extract phone, message, and media details
+        logger.debug("Extracting message content")
         phone = request.values.get('From', '')
         incoming_msg = request.values.get('Body', '').strip()
         num_media = int(request.values.get('NumMedia', '0'))
