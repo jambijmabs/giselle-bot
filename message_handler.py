@@ -1,6 +1,7 @@
 import re
 import logging
 import requests
+import json
 from openai import OpenAI
 import bot_config
 import traceback
@@ -28,12 +29,18 @@ def initialize_message_handler(openai_api_key, projects_data_ref, downloadable_u
     openai_client = OpenAI(api_key=openai_api_key)
     projects_data = projects_data_ref
     downloadable_urls = downloadable_urls_ref
-    twilio_client = Client(twilio_account_sid, twilio_auth_token)
-    logger.debug(f"Initialized with projects_data: {list(projects_data.keys())}")
-    logger.debug(f"Twilio client initialized with account SID: {twilio_account_sid}")
+    try:
+        twilio_client = Client(twilio_account_sid, twilio_auth_token)
+        logger.debug(f"Twilio client initialized with account SID: {twilio_account_sid}")
+    except Exception as e:
+        logger.error(f"Failed to initialize Twilio client: {str(e)}", exc_info=True)
+        twilio_client = None
 
 def check_whatsapp_window(phone):
     """Check if the WhatsApp 24-hour messaging window is active for the given phone."""
+    if twilio_client is None:
+        logger.error("Twilio client not initialized, cannot check WhatsApp window.")
+        return False
     try:
         # Buscar los mensajes recientes recibidos desde el número del gerente
         messages = twilio_client.messages.list(
@@ -186,8 +193,14 @@ def process_message(incoming_msg, phone, conversation_state, project_info, conve
             logger.debug(f"Sending to gerente_phone: {gerente_phone} from {whatsapp_sender_number}")
 
             try:
+                if twilio_client is None:
+                    raise Exception("Twilio client not initialized.")
+
                 # Verificar si la ventana de 24 horas está activa
+                logger.debug(f"Checking WhatsApp window for {gerente_phone}")
                 window_active = check_whatsapp_window(gerente_phone)
+                logger.debug(f"WhatsApp window active: {window_active}")
+
                 if window_active:
                     # Enviar mensaje libre si la ventana está activa
                     message = twilio_client.messages.create(
@@ -198,15 +211,18 @@ def process_message(incoming_msg, phone, conversation_state, project_info, conve
                     logger.info(f"Sent freeform message to gerente: SID {message.sid}, Estado: {message.status}")
                 else:
                     # Enviar mensaje de plantilla si la ventana no está activa
+                    # Simplificar content_variables para evitar problemas con caracteres especiales
+                    content_vars = {
+                        "1": client_name.encode('ascii', 'ignore').decode('ascii'),
+                        "2": project_context.encode('ascii', 'ignore').decode('ascii'),
+                        "3": incoming_msg.encode('ascii', 'ignore').decode('ascii')
+                    }
+                    logger.debug(f"Content variables for template: {content_vars}")
                     message = twilio_client.messages.create(
                         from_=whatsapp_sender_number,
                         to=gerente_phone,
                         content_sid=WHATSAPP_TEMPLATE_NAME,
-                        content_variables=json.dumps({
-                            "1": client_name,
-                            "2": project_context,
-                            "3": incoming_msg
-                        })
+                        content_variables=json.dumps(content_vars)
                     )
                     logger.info(f"Sent template message to gerente: SID {message.sid}, Estado: {message.status}")
 
