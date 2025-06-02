@@ -56,7 +56,7 @@ def check_whatsapp_window(phone):
             return False
     except Exception as e:
         logger.error(f"Error checking WhatsApp window for {phone}: {str(e)}", exc_info=True)
-        return False
+        return False  # En caso de error, asumimos que la ventana no está activa
 
 def handle_gerente_response(incoming_msg, phone, conversation_state, gcs_bucket_name):
     """Process a response from the gerente and prepare a message for the client."""
@@ -211,18 +211,16 @@ def process_message(incoming_msg, phone, conversation_state, project_info, conve
                     logger.info(f"Sent freeform message to gerente: SID {message.sid}, Estado: {message.status}")
                 else:
                     # Enviar mensaje de plantilla si la ventana no está activa
-                    # Simplificar content_variables para evitar problemas con caracteres especiales
-                    content_vars = {
-                        "1": client_name.encode('ascii', 'ignore').decode('ascii'),
-                        "2": project_context.encode('ascii', 'ignore').decode('ascii'),
-                        "3": incoming_msg.encode('ascii', 'ignore').decode('ascii')
-                    }
-                    logger.debug(f"Content variables for template: {content_vars}")
+                    logger.debug(f"Using template {WHATSAPP_TEMPLATE_NAME} for gerente message")
                     message = twilio_client.messages.create(
                         from_=whatsapp_sender_number,
                         to=gerente_phone,
                         content_sid=WHATSAPP_TEMPLATE_NAME,
-                        content_variables=json.dumps(content_vars)
+                        content_variables=json.dumps({
+                            "1": client_name,
+                            "2": project_context,
+                            "3": incoming_msg
+                        })
                     )
                     logger.info(f"Sent template message to gerente: SID {message.sid}, Estado: {message.status}")
 
