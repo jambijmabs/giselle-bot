@@ -152,6 +152,48 @@ def save_client_info(phone, conversation_state, gcs_bucket_name, gcs_conversatio
     except Exception as e:
         logger.error(f"Error saving client info for {phone}: {str(e)}")
 
+def generate_interested_report(conversation_state):
+    """Generate a report of interested clients, their projects, and statuses."""
+    logger.debug("Generating interested report")
+    report = []
+    interested_count = 0
+    project_counts = {}
+    status_counts = {'Interesado': 0, 'Esperando Respuesta': 0, 'No Interesado': 0}
+
+    # Iterate through all clients in conversation_state
+    for phone, state in conversation_state.items():
+        # Skip the gerente
+        if state.get('is_gerente', False):
+            continue
+
+        # Increment total interested count (excluding gerente)
+        interested_count += 1
+
+        # Determine the project of interest
+        project = state.get('last_mentioned_project', 'Desconocido')
+        project_counts[project] = project_counts.get(project, 0) + 1
+
+        # Determine the client's status
+        if state.get('pending_question'):
+            status = 'Esperando Respuesta'
+        elif state.get('no_interest', False):
+            status = 'No Interesado'
+        else:
+            status = 'Interesado'
+        status_counts[status] += 1
+
+    # Build the report
+    report.append(f"Reporte de Interesados:")
+    report.append(f"Total de interesados: {interested_count}")
+    report.append("Proyectos de interés:")
+    for project, count in project_counts.items():
+        report.append(f"- {project}: {count} interesados")
+    report.append("Estados:")
+    for status, count in status_counts.items():
+        report.append(f"- {status}: {count} clientes")
+
+    return report
+
 def download_projects_from_storage(bucket_name, base_path):
     """Download project files from Google Cloud Storage."""
     try:
