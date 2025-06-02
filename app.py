@@ -11,7 +11,7 @@ import utils
 import message_handler
 from google.cloud import storage
 
-# Configuration Section
+# Configuration Sections
 WHATSAPP_SENDER_NUMBER = "whatsapp:+18188732305"
 # Lista de números de gerentes (solo el número en formato E.164, con prefijo +)
 GERENTE_NUMBERS = ["+5218110665094"]  # Número del gerente corregido
