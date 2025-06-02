@@ -13,8 +13,8 @@ from google.cloud import storage
 
 # Configuration Section
 WHATSAPP_SENDER_NUMBER = "whatsapp:+18188732305"
-# Lista de gerentes para mayor flexibilidad (solo el WaId, sin prefijo whatsapp:)
-GERENTE_NUMBERS = ["5218110665094"]  # Número del gerente en formato E.164 sin prefijo
+# Lista de números de gerentes (solo el número en formato E.164, sin prefijo whatsapp:)
+GERENTE_NUMBERS = ["+5218110665094"]  # Número del gerente en formato E.164
 GERENTE_ROLE = bot_config.GERENTE_ROLE
 TWILIO_ACCOUNT_SID = os.getenv('TWILIO_ACCOUNT_SID')
 TWILIO_AUTH_TOKEN = os.getenv('TWILIO_AUTH_TOKEN')
@@ -284,26 +284,27 @@ def whatsapp():
         # Log request data for debugging
         logger.debug(f"Request form data: {request.form}")
 
-        # Extract phone, WaId, message, and media details
+        # Extract phone, message, and media details
         phone = request.values.get('From', '')
-        wa_id = request.values.get('WaId', '')  # Extract WaId from webhook
         incoming_msg = request.values.get('Body', '').strip()
         num_media = int(request.values.get('NumMedia', '0'))
         media_url = request.values.get('MediaUrl0', None) if num_media > 0 else None
 
-        logger.debug(f"From phone: {phone}, WaId: {wa_id}, Message: {incoming_msg}, NumMedia: {num_media}, MediaUrl: {media_url}")
+        logger.debug(f"From phone: {phone}, Message: {incoming_msg}, NumMedia: {num_media}, MediaUrl: {media_url}")
 
         if not phone:
             logger.error("No se encontró 'From' en la solicitud")
             return "Error: Solicitud incompleta", 400
 
-        # Primer candado: Identificar al gerente usando WaId
-        is_gerente = wa_id in GERENTE_NUMBERS
-        logger.debug(f"Comparando WaId: wa_id='{wa_id}', GERENTE_NUMBERS={GERENTE_NUMBERS}, is_gerente={is_gerente}")
+        # Primer candado: Identificar al gerente usando el número completo (From)
+        # Normalizar el número eliminando el prefijo whatsapp: y asegurando el formato
+        normalized_phone = phone.replace("whatsapp:", "").strip()
+        is_gerente = normalized_phone in GERENTE_NUMBERS
+        logger.debug(f"Comparando número: phone='{phone}', normalized_phone='{normalized_phone}', GERENTE_NUMBERS={GERENTE_NUMBERS}, is_gerente={is_gerente}")
 
         # Si es el gerente, inicializar su estado y dirigirlo al manejador de gerente
         if is_gerente:
-            logger.info(f"Identificado como gerente: {phone} (WaId: {wa_id})")
+            logger.info(f"Identificado como gerente: {phone}")
             if phone not in conversation_state:
                 conversation_state[phone] = {
                     'history': [],
@@ -333,7 +334,7 @@ def whatsapp():
 
         # Si no es el gerente, tratar como cliente
         else:
-            logger.info(f"Identificado como cliente: {phone} (WaId: {wa_id})")
+            logger.info(f"Identificado como cliente: {phone}")
             # Inicializar estado de cliente si no existe
             if phone not in conversation_state:
                 conversation_state[phone] = {
