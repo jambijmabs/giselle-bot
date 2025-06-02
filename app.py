@@ -11,9 +11,9 @@ import utils
 import message_handler
 from google.cloud import storage
 
-# Configuration Section
+# Configuration Section ULTIMA VERSION MAMALONA
 WHATSAPP_SENDER_NUMBER = "whatsapp:+18188732305"
-GERENTE_PHONE = bot_config.GERENTE_PHONE
+GERENTE_PHONE = "whatsapp:+528110665094"  # Hardcode for reliability
 GERENTE_ROLE = bot_config.GERENTE_ROLE
 TWILIO_ACCOUNT_SID = os.getenv('TWILIO_ACCOUNT_SID')
 TWILIO_AUTH_TOKEN = os.getenv('TWILIO_AUTH_TOKEN')
@@ -308,6 +308,9 @@ def whatsapp():
         if not gerente_phone_normalized.startswith('whatsapp:+'):
             gerente_phone_normalized = f"whatsapp:+{gerente_phone_normalized}"
 
+        # Debug comparison
+        logger.debug(f"phone: {repr(phone)}, length: {len(phone)}, bytes: {phone.encode('utf-8')}")
+        logger.debug(f"GERENTE_PHONE: {repr(gerente_phone_normalized)}, length: {len(gerente_phone_normalized)}, bytes: {gerente_phone_normalized.encode('utf-8')}")
         is_gerente = phone == gerente_phone_normalized
         logger.debug(f"Comparing phone numbers: phone='{phone}', GERENTE_PHONE='{gerente_phone_normalized}', is_gerente={is_gerente}")
 
@@ -324,7 +327,7 @@ def whatsapp():
         try:
             if phone not in conversation_state:
                 conversation_state[phone] = {
-                    'history': [] if is_gerente else [],  # No history for gerente
+                    'history': [] if is_gerente else [],
                     'name_asked': 0,
                     'budget_asked': 0,
                     'contact_time_asked': 0,
@@ -348,6 +351,8 @@ def whatsapp():
                 }
             else:
                 existing_state = conversation_state[phone]
+                # Ensure 'is_gerente' is updated correctly
+                existing_state['is_gerente'] = is_gerente
                 conversation_state[phone] = {
                     'history': [] if is_gerente else existing_state.get('history', []),
                     'name_asked': existing_state.get('name_asked', 0),
