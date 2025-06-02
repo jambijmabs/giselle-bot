@@ -20,6 +20,7 @@ downloadable_urls = {}
 twilio_client = None
 whatsapp_sender_number = "whatsapp:+18188732305"
 gerente_phone = bot_config.GERENTE_PHONE
+gerente_role = bot_config.GERENTE_ROLE
 
 def initialize_message_handler(openai_api_key, projects_data_ref, downloadable_urls_ref, twilio_account_sid, twilio_auth_token):
     global openai_client, projects_data, downloadable_urls, twilio_client
@@ -28,7 +29,6 @@ def initialize_message_handler(openai_api_key, projects_data_ref, downloadable_u
     downloadable_urls = downloadable_urls_ref
     twilio_client = Client(twilio_account_sid, twilio_auth_token)
     logger.debug(f"Initialized with projects_data: {list(projects_data.keys())}")
-    logger.debug(f"Twilio client initialized with account SID: {twilio_account_sid}")
 
 def process_message(incoming_msg, phone, conversation_state, project_info, conversation_history):
     logger.debug(f"Processing message: {incoming_msg}")
@@ -37,7 +37,6 @@ def process_message(incoming_msg, phone, conversation_state, project_info, conve
 
     # Detectar proyecto en el mensaje actual
     normalized_msg = incoming_msg.lower().replace(" ", "")
-    logger.debug(f"Normalized message for project detection: {normalized_msg}")
     for project in projects_data.keys():
         if project.lower() in normalized_msg:
             mentioned_project = project
@@ -45,7 +44,6 @@ def process_message(incoming_msg, phone, conversation_state, project_info, conve
 
     # Si no hay proyecto en el mensaje, usar el último del historial
     if not mentioned_project:
-        logger.debug("No project mentioned in message; checking conversation history")
         for msg in conversation_history.split('\n'):
             for project in projects_data.keys():
                 if project.lower() in msg.lower():
@@ -97,33 +95,28 @@ def process_message(incoming_msg, phone, conversation_state, project_info, conve
             temperature=0.7
         )
         reply = response.choices[0].message.content.strip()
-        logger.debug(f"Generated response from OpenAI: {reply}")
+        logger.debug(f"Generated response: {reply}")
 
         # Check if the response indicates the bot doesn't know the answer
         if "no sé exactamente" in reply.lower() or "déjame investigarlo" in reply.lower():
             logger.info(f"Bot cannot answer: {incoming_msg}. Contacting gerente.")
             messages.append("Permíteme, déjame revisar esto con el gerente.")
             
-            # Send message to gerente, including the project name and reminder
-            project_context = f"sobre {mentioned_project}" if mentioned_project else "general"
-            gerente_message = f"Pregunta de {client_name} {project_context}: {incoming_msg}\nRecuerda contestar con respuestafaq:"
-            logger.debug(f"Preparing to send message to gerente: {gerente_message}")
-            logger.debug(f"Sending to gerente_phone: {gerente_phone} from {whatsapp_sender_number}")
-            try:
-                message = twilio_client.messages.create(
-                    from_=whatsapp_sender_number,
-                    body=gerente_message,
-                    to=gerente_phone
-                )
-                logger.info(f"Sent message to gerente: SID {message.sid}, Estado: {message.status}")
-                updated_message = twilio_client.messages(message.sid).fetch()
-                logger.info(f"Estado del mensaje actualizado: {updated_message.status}")
-                if updated_message.status == "failed":
-                    logger.error(f"Error al enviar mensaje al gerente: {updated_message.error_code} - {updated_message.error_message}")
-                    messages = ["Lo siento, ocurrió un error al contactar al gerente. ¿En qué más puedo ayudarte?"]
-            except Exception as twilio_e:
-                logger.error(f"Error sending message to gerente via Twilio: {str(twilio_e)}", exc_info=True)
-                messages = ["Lo siento, ocurrió un error al contactar al gerente. ¿En qué más puedo ayudarte?"]
+            # Send message to gerente
+            gerente_message = f"Pregunta de {client_name} sobre {mentioned_project}: {incoming_msg}"
+            message = twilio_client.messages.create(
+                from_=whatsapp_sender_number,
+                body=gerente_message,
+                to=gerente_phone
+            )
+            logger.info(f"Sent message to gerente: SID {message.sid}, Estado: {message.status}")
+
+            # Store the pending question in conversation state
+            conversation_state[phone]['pending_question'] = {
+                'question': incoming_msg,
+                'client_phone': phone,
+                'mentioned_project': mentioned_project
+            }
         else:
             # Split the reply into messages
             current_message = ""
@@ -145,7 +138,7 @@ def process_message(incoming_msg, phone, conversation_state, project_info, conve
                 messages = ["No sé exactamente, pero déjame investigarlo con más detalle para ti."]
 
     except Exception as openai_e:
-        logger.error(f"Fallo con OpenAI API: {str(openai_e)}", exc_info=True)
+        logger.error(f"Fallo con OpenAI API: {str(openai_e)}")
         messages = ["Lo siento, no entiendo bien tu pregunta."]
 
     logger.debug(f"Final messages: {messages}")
@@ -182,3 +175,53 @@ def handle_audio_message(media_url, phone, twilio_account_sid, twilio_auth_token
     finally:
         if os.path.exists(audio_file_path):
             os.remove(audio_file_path)
+
+def handle_gerente_response(incoming_msg, phone, conversation_state, gcs_bucket_name):
+    """Handle responses from the gerente and prepare a message for the client."""
+    if phone != gerente_phone:
+        logger.debug(f"Message not from gerente: {phone}. Skipping gerente response handling.")
+        return None, None  # Only process messages from the gerente
+
+    # Log the current state to debug
+    logger.debug(f"Handling gerente response from {phone} (Role: {gerente_role}). Current conversation_state: {conversation_state}")
+
+    # Check if there's a pending question
+    client_phone = None
+    for client, state in conversation_state.items():
+        if 'pending_question' in state and state['pending_question'] and state['pending_question']['client_phone'] == client:
+            client_phone = client
+            logger.debug(f"Found pending question for client {client}: {state['pending_question']}")
+            break
+        else:
+            logger.debug(f"No pending question for client {client}: {state.get('pending_question', 'None')}")
+
+    if not client_phone or 'pending_question' not in conversation_state.get(client_phone, {}):
+        logger.error(f"No pending question found for gerente response. Client phone: {client_phone}, Conversation state for client: {conversation_state.get(client_phone, {})}")
+        return None, None
+
+    pending_question = conversation_state[client_phone]['pending_question']
+    question = pending_question['question']
+    mentioned_project = pending_question['mentioned_project']
+
+    # Store the gerente's response
+    utils.save_gerente_respuesta(
+        "PROYECTOS",
+        question,
+        incoming_msg,
+        gcs_bucket_name
+    )
+    logger.debug(f"Saved gerente response for question '{question}' with answer '{incoming_msg}'")
+
+    # Update the global gerente_respuestas
+    utils.gerente_respuestas[question] = incoming_msg
+    logger.debug(f"Updated gerente_respuestas: {utils.gerente_respuestas}")
+
+    # Prepare response for the client
+    messages = [f"Gracias por esperar. Sobre tu pregunta: {incoming_msg}"]
+    logger.debug(f"Prepared response for client {client_phone}: {messages}")
+
+    # Clear the pending question
+    conversation_state[client_phone]['pending_question'] = None
+    logger.debug(f"Cleared pending question for client {client_phone}")
+
+    return client_phone, messages
