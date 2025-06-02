@@ -2,6 +2,7 @@ import re
 import logging
 import requests
 import json
+import string
 from openai import OpenAI
 import bot_config
 import traceback
@@ -23,7 +24,6 @@ downloadable_urls = {}
 twilio_client = None
 whatsapp_sender_number = "whatsapp:+18188732305"
 gerente_phone = bot_config.GERENTE_PHONE
-WHATSAPP_TEMPLATE_NAME = "giselle_gerente_question"  # Nombre de la plantilla pre-registrada
 
 def initialize_message_handler(openai_api_key, projects_data_ref, downloadable_urls_ref, twilio_account_sid, twilio_auth_token):
     global openai_client, projects_data, downloadable_urls, twilio_client
@@ -203,28 +203,13 @@ def process_message(incoming_msg, phone, conversation_state, project_info, conve
                 window_active = check_whatsapp_window(gerente_phone)
                 logger.debug(f"WhatsApp window active: {window_active}")
 
-                if window_active:
-                    # Enviar mensaje libre si la ventana está activa
-                    message = twilio_client.messages.create(
-                        from_=whatsapp_sender_number,
-                        body=gerente_message,
-                        to=gerente_phone
-                    )
-                    logger.info(f"Sent freeform message to gerente: SID {message.sid}, Estado: {message.status}")
-                else:
-                    # Enviar mensaje de plantilla si la ventana no está activa
-                    logger.debug(f"Using template {WHATSAPP_TEMPLATE_NAME} for gerente message")
-                    message = twilio_client.messages.create(
-                        from_=whatsapp_sender_number,
-                        to=gerente_phone,
-                        content_sid=WHATSAPP_TEMPLATE_NAME,
-                        content_variables=json.dumps({
-                            "1": client_name,
-                            "2": project_context,
-                            "3": incoming_msg
-                        })
-                    )
-                    logger.info(f"Sent template message to gerente: SID {message.sid}, Estado: {message.status}")
+                # Enviar mensaje libre al gerente (eliminamos el uso de plantillas)
+                message = twilio_client.messages.create(
+                    from_=whatsapp_sender_number,
+                    body=gerente_message,
+                    to=gerente_phone
+                )
+                logger.info(f"Sent message to gerente: SID {message.sid}, Estado: {message.status}")
 
                 # Verificar el estado del mensaje
                 updated_message = twilio_client.messages(message.sid).fetch()
