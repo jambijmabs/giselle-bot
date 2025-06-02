@@ -13,7 +13,7 @@ from google.cloud import storage
 
 # Configuration Section
 WHATSAPP_SENDER_NUMBER = "whatsapp:+18188732305"
-GERENTE_PHONE = "whatsapp:+528110665094"  # Hardcoded for reliability
+GERENTE_PHONE = "whatsapp:+5218110665094"  # Corregido al formato E.164 correcto
 GERENTE_ROLE = bot_config.GERENTE_ROLE
 TWILIO_ACCOUNT_SID = os.getenv('TWILIO_ACCOUNT_SID')
 TWILIO_AUTH_TOKEN = os.getenv('TWILIO_AUTH_TOKEN')
@@ -267,107 +267,6 @@ def handle_client_message(phone, incoming_msg):
 
     logger.debug("Returning success response")
     return "Mensaje enviado", 200
-
-@app.route('/whatsapp', methods=['POST'])
-def whatsapp():
-    logger.debug("Entered /whatsapp route")
-    try:
-        if client is None:
-            logger.error("Twilio client not initialized. Cannot process WhatsApp messages.")
-            return "Error: Twilio client not initialized", 500
-
-        # Reload conversation state from GCS
-        utils.load_conversation_state(conversation_state, GCS_BUCKET_NAME, GCS_CONVERSATIONS_PATH)
-        logger.debug("Conversation state reloaded")
-
-        # Log request data for debugging
-        logger.debug(f"Request form data: {request.form}")
-
-        # Extract phone and message
-        phone = request.values.get('From', '')
-        incoming_msg = request.values.get('Body', '').strip()
-        logger.debug(f"From phone: {phone}, Message: {incoming_msg}")
-
-        if not incoming_msg or not phone:
-            logger.error("No se encontraron 'Body' o 'From' en la solicitud")
-            return "Error: Solicitud incompleta", 400
-
-        logger.info(f"Mensaje recibido de {phone}: {incoming_msg}")
-
-        # Primer candado: Identificar al gerente inmediatamente
-        GERENTE_PHONE = "whatsapp:+528110665094"  # Hardcoded para máxima confiabilidad
-        is_gerente = phone == GERENTE_PHONE
-        logger.debug(f"Comparando: phone='{phone}', GERENTE_PHONE='{GERENTE_PHONE}', is_gerente={is_gerente}")
-
-        # Si es el gerente, inicializar su estado y dirigirlo al manejador de gerente
-        if is_gerente:
-            logger.info(f"Identificado como gerente: {phone}")
-            if phone not in conversation_state:
-                conversation_state[phone] = {
-                    'history': [],
-                    'is_gerente': True,
-                    'last_contact': datetime.now().isoformat(),
-                    'last_incoming_time': datetime.now().isoformat()
-                }
-            else:
-                conversation_state[phone]['is_gerente'] = True
-            return handle_gerente_message(phone, incoming_msg)
-
-        # Si no es el gerente, tratar como cliente
-        else:
-            logger.info(f"Identificado como cliente: {phone}")
-            # Inicializar estado de cliente si no existe
-            if phone not in conversation_state:
-                conversation_state[phone] = {
-                    'history': [],
-                    'name_asked': 0,
-                    'budget_asked': 0,
-                    'contact_time_asked': 0,
-                    'messages_since_budget_ask': 0,
-                    'messages_without_response': 0,
-                    'preferred_time': None,
-                    'preferred_days': None,
-                    'client_name': None,
-                    'client_budget': None,
-                    'last_contact': datetime.now().isoformat(),
-                    'recontact_attempts': 0,
-                    'no_interest': False,
-                    'schedule_next': None,
-                    'last_incoming_time': datetime.now().isoformat(),
-                    'introduced': False,
-                    'project_info_shared': {},
-                    'last_mentioned_project': None,
-                    'pending_question': None,
-                    'pending_response_time': None,
-                    'is_gerente': False
-                }
-            return handle_client_message(phone, incoming_msg)
-
-    except Exception as e:
-        logger.error(f"Error inesperado en /whatsapp: {str(e)}", exc_info=True)
-        try:
-            phone = phone.strip()
-            if not phone.startswith('whatsapp:+'):
-                phone = phone.replace('whatsapp:', '').strip()
-                phone = f"whatsapp:+{phone.replace(' ', '')}"
-            logger.debug(f"Phone number in exception handler: {repr(phone)}")
-            if not phone.startswith('whatsapp:+'):
-                logger.error(f"Invalid phone number format in exception handler: {repr(phone)}")
-                return "Error: Invalid phone number format in exception handler", 400
-            message = client.messages.create(
-                from_=WHATSAPP_SENDER_NUMBER,
-                body="Lo siento, ocurrió un error. ¿En qué más puedo ayudarte?",
-                to=phone
-            )
-            logger.info(f"Fallback message sent: SID {message.sid}, Estado: {message.status}")
-            if not conversation_state[phone].get('is_gerente', False):
-                conversation_state[phone]['history'].append("Giselle: Lo siento, ocurrió un error. ¿En qué más puedo ayudarte?")
-                utils.save_conversation_state(conversation_state, GCS_BUCKET_NAME, GCS_CONVERSATIONS_PATH)
-                utils.save_conversation_history(phone, conversation_state[phone]['history'], GCS_BUCKET_NAME, GCS_CONVERSATIONS_PATH)
-                utils.save_client_info(phone, conversation_state, GCS_BUCKET_NAME, GCS_CONVERSATIONS_PATH)
-        except Exception as twilio_e:
-            logger.error(f"Error sending fallback message: {str(twilio_e)}")
-        return "Error interno del servidor", 500
 
 @app.route('/', methods=['GET'])
 def root():
