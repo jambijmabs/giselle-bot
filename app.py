@@ -11,9 +11,9 @@ import utils
 import message_handler
 from google.cloud import storage
 
-# Configuration Section ULTIMA VERSION MAMALONA
+# Configuration Section
 WHATSAPP_SENDER_NUMBER = "whatsapp:+18188732305"
-GERENTE_PHONE = "whatsapp:+528110665094"  # Hardcode for reliability
+GERENTE_PHONE = "whatsapp:+528110665094"  # Hardcoded for reliability
 GERENTE_ROLE = bot_config.GERENTE_ROLE
 TWILIO_ACCOUNT_SID = os.getenv('TWILIO_ACCOUNT_SID')
 TWILIO_AUTH_TOKEN = os.getenv('TWILIO_AUTH_TOKEN')
@@ -280,42 +280,13 @@ def whatsapp():
         utils.load_conversation_state(conversation_state, GCS_BUCKET_NAME, GCS_CONVERSATIONS_PATH)
         logger.debug("Conversation state reloaded")
 
-        # Log the entire request data for debugging
-        logger.debug(f"Request headers: {dict(request.headers)}")
+        # Log request data for debugging
         logger.debug(f"Request form data: {request.form}")
-        logger.debug(f"Request values: {dict(request.values)}")
 
-        logger.debug("Extracting message content")
-        num_media = int(request.values.get('NumMedia', '0'))
-        logger.debug(f"Number of media items: {num_media}")
+        # Extract phone and message
         phone = request.values.get('From', '')
-        logger.debug(f"From phone: {phone}")
-
-        # Normalize the phone number early
-        phone = phone.strip()
-        if not phone.startswith('whatsapp:+'):
-            if phone.startswith('whatsapp:'):
-                phone = f"whatsapp:+{phone[len('whatsapp:'):]}"
-            else:
-                phone = f"whatsapp:+{phone}"
-
-        if not phone.startswith('whatsapp:+'):
-            logger.error(f"Invalid phone number format after normalization: {repr(phone)}")
-            return "Error: Invalid phone number format", 400
-
-        # Normalize GERENTE_PHONE for comparison
-        gerente_phone_normalized = GERENTE_PHONE.strip()
-        if not gerente_phone_normalized.startswith('whatsapp:+'):
-            gerente_phone_normalized = f"whatsapp:+{gerente_phone_normalized}"
-
-        # Debug comparison
-        logger.debug(f"phone: {repr(phone)}, length: {len(phone)}, bytes: {phone.encode('utf-8')}")
-        logger.debug(f"GERENTE_PHONE: {repr(gerente_phone_normalized)}, length: {len(gerente_phone_normalized)}, bytes: {gerente_phone_normalized.encode('utf-8')}")
-        is_gerente = phone == gerente_phone_normalized
-        logger.debug(f"Comparing phone numbers: phone='{phone}', GERENTE_PHONE='{gerente_phone_normalized}', is_gerente={is_gerente}")
-
         incoming_msg = request.values.get('Body', '').strip()
-        logger.debug(f"Processing message from {phone}: {incoming_msg}")
+        logger.debug(f"From phone: {phone}, Message: {incoming_msg}")
 
         if not incoming_msg or not phone:
             logger.error("No se encontraron 'Body' o 'From' en la solicitud")
@@ -323,11 +294,32 @@ def whatsapp():
 
         logger.info(f"Mensaje recibido de {phone}: {incoming_msg}")
 
-        # Initialize conversation state with error handling
-        try:
+        # Primer candado: Identificar al gerente inmediatamente
+        GERENTE_PHONE = "whatsapp:+528110665094"  # Hardcoded para máxima confiabilidad
+        is_gerente = phone == GERENTE_PHONE
+        logger.debug(f"Comparando: phone='{phone}', GERENTE_PHONE='{GERENTE_PHONE}', is_gerente={is_gerente}")
+
+        # Si es el gerente, inicializar su estado y dirigirlo al manejador de gerente
+        if is_gerente:
+            logger.info(f"Identificado como gerente: {phone}")
             if phone not in conversation_state:
                 conversation_state[phone] = {
-                    'history': [] if is_gerente else [],
+                    'history': [],
+                    'is_gerente': True,
+                    'last_contact': datetime.now().isoformat(),
+                    'last_incoming_time': datetime.now().isoformat()
+                }
+            else:
+                conversation_state[phone]['is_gerente'] = True
+            return handle_gerente_message(phone, incoming_msg)
+
+        # Si no es el gerente, tratar como cliente
+        else:
+            logger.info(f"Identificado como cliente: {phone}")
+            # Inicializar estado de cliente si no existe
+            if phone not in conversation_state:
+                conversation_state[phone] = {
+                    'history': [],
                     'name_asked': 0,
                     'budget_asked': 0,
                     'contact_time_asked': 0,
@@ -347,70 +339,9 @@ def whatsapp():
                     'last_mentioned_project': None,
                     'pending_question': None,
                     'pending_response_time': None,
-                    'is_gerente': is_gerente
+                    'is_gerente': False
                 }
-            else:
-                existing_state = conversation_state[phone]
-                # Ensure 'is_gerente' is updated correctly
-                existing_state['is_gerente'] = is_gerente
-                conversation_state[phone] = {
-                    'history': [] if is_gerente else existing_state.get('history', []),
-                    'name_asked': existing_state.get('name_asked', 0),
-                    'budget_asked': existing_state.get('budget_asked', 0),
-                    'contact_time_asked': existing_state.get('contact_time_asked', 0),
-                    'messages_since_budget_ask': existing_state.get('messages_since_budget_ask', 0),
-                    'messages_without_response': 0,
-                    'preferred_time': existing_state.get('preferred_time'),
-                    'preferred_days': existing_state.get('preferred_days'),
-                    'client_name': None if is_gerente else existing_state.get('client_name'),
-                    'client_budget': None if is_gerente else existing_state.get('client_budget'),
-                    'last_contact': existing_state.get('last_contact', datetime.now().isoformat()),
-                    'recontact_attempts': existing_state.get('recontact_attempts', 0),
-                    'no_interest': existing_state.get('no_interest', False),
-                    'schedule_next': existing_state.get('schedule_next'),
-                    'last_incoming_time': datetime.now().isoformat(),
-                    'introduced': existing_state.get('introduced', False),
-                    'project_info_shared': existing_state.get('project_info_shared', {}),
-                    'last_mentioned_project': existing_state.get('last_mentioned_project'),
-                    'pending_question': existing_state.get('pending_question'),
-                    'pending_response_time': existing_state.get('pending_response_time'),
-                    'is_gerente': is_gerente
-                }
-        except Exception as e:
-            logger.error(f"Error initializing conversation state: {str(e)}")
-            conversation_state[phone] = {
-                'history': [],
-                'name_asked': 0,
-                'budget_asked': 0,
-                'contact_time_asked': 0,
-                'messages_since_budget_ask': 0,
-                'messages_without_response': 0,
-                'preferred_time': None,
-                'preferred_days': None,
-                'client_name': None,
-                'client_budget': None,
-                'last_contact': datetime.now().isoformat(),
-                'recontact_attempts': 0,
-                'no_interest': False,
-                'schedule_next': None,
-                'last_incoming_time': datetime.now().isoformat(),
-                'introduced': False,
-                'project_info_shared': {},
-                'last_mentioned_project': None,
-                'pending_question': None,
-                'pending_response_time': None,
-                'is_gerente': is_gerente
-            }
-
-        # Route the message to the appropriate handler
-        if is_gerente:
-            result = handle_gerente_message(phone, incoming_msg)
-            logger.debug(f"Gerente message handled: {result}")
-            return result
-        else:
-            result = handle_client_message(phone, incoming_msg)
-            logger.debug(f"Client message handled: {result}")
-            return result
+            return handle_client_message(phone, incoming_msg)
 
     except Exception as e:
         logger.error(f"Error inesperado en /whatsapp: {str(e)}", exc_info=True)
