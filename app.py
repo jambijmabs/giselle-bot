@@ -462,14 +462,15 @@ def handle_client_message(phone, incoming_msg, num_media, media_url=None):
         else:
             # Process the message using AI for a more natural response
             logger.debug(f"Processing message with message_handler: {incoming_msg}")
-            messages, mentioned_project = message_handler.process_message(
+            messages, mentioned_project, needs_gerente = message_handler.process_message(
                 incoming_msg, phone, conversation_state, project_info, conversation_history
             )
             logger.debug(f"Messages generated: {messages}")
             logger.debug(f"Mentioned project after processing: {mentioned_project}")
+            logger.debug(f"Needs gerente contact: {needs_gerente}")
 
             # If the bot needs to contact the gerente
-            if any("puedo revisarlo con el gerente" in msg for msg in messages):
+            if needs_gerente:
                 conversation_state[phone]['pending_question'] = {
                     'question': incoming_msg,
                     'mentioned_project': mentioned_project,
