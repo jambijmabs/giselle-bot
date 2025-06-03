@@ -393,57 +393,14 @@ def handle_client_message(phone, incoming_msg, num_media, media_url=None):
                 utils.save_client_info(phone, conversation_state, GCS_BUCKET_NAME, GCS_CONVERSATIONS_PATH)
                 return "Waiting for gerente response", 200
 
-        # Check for client name in the message
-        logger.debug(f"Checking for client name in message: {incoming_msg}")
-        if "mi nombre es" in incoming_msg.lower():
-            name = incoming_msg.lower().split("mi nombre es")[-1].strip()
-            conversation_state[phone]['client_name'] = name.capitalize()
-            logger.info(f"Client name set to: {conversation_state[phone]['client_name']}")
-            utils.save_client_info(phone, conversation_state, GCS_BUCKET_NAME, GCS_CONVERSATIONS_PATH)
-            # Increment name_asked to avoid re-asking
-            conversation_state[phone]['name_asked'] = conversation_state[phone].get('name_asked', 0) + 1
-            messages = ["Gracias por compartir tu nombre. Tienes un presupuesto en mente?"]
-            utils.send_consecutive_messages(phone, messages, client, WHATSAPP_SENDER_NUMBER)
-            conversation_state[phone]['history'].append(f"Giselle: {messages[0]}")
-            utils.save_conversation_state(conversation_state, GCS_BUCKET_NAME, GCS_CONVERSATIONS_PATH)
-            utils.save_conversation_history(phone, conversation_state[phone]['history'], GCS_BUCKET_NAME, GCS_CONVERSATIONS_PATH)
-            utils.save_client_info(phone, conversation_state, GCS_BUCKET_NAME, GCS_CONVERSATIONS_PATH)
-            return "Mensaje enviado", 200
-        elif conversation_state[phone].get('name_asked', 0) > 0 and not conversation_state[phone].get('client_name'):
-            name = incoming_msg.strip()
-            if name and name.lower() != 'hola':
+        # Use AI to extract the client name if not already set
+        if not conversation_state[phone].get('client_name') and conversation_state[phone].get('name_asked', 0) > 0:
+            name = message_handler.extract_name(incoming_msg, conversation_state[phone]['history'])
+            if name:
                 conversation_state[phone]['client_name'] = name.capitalize()
                 logger.info(f"Client name set to: {conversation_state[phone]['client_name']}")
                 utils.save_client_info(phone, conversation_state, GCS_BUCKET_NAME, GCS_CONVERSATIONS_PATH)
                 conversation_state[phone]['name_asked'] = conversation_state[phone].get('name_asked', 0) + 1
-                messages = ["Gracias por compartir tu nombre. Tienes un presupuesto en mente?"]
-                utils.send_consecutive_messages(phone, messages, client, WHATSAPP_SENDER_NUMBER)
-                conversation_state[phone]['history'].append(f"Giselle: {messages[0]}")
-                utils.save_conversation_state(conversation_state, GCS_BUCKET_NAME, GCS_CONVERSATIONS_PATH)
-                utils.save_conversation_history(phone, conversation_state[phone]['history'], GCS_BUCKET_NAME, GCS_CONVERSATIONS_PATH)
-                utils.save_client_info(phone, conversation_state, GCS_BUCKET_NAME, GCS_CONVERSATIONS_PATH)
-                return "Mensaje enviado", 200
-
-        # Check for client budget in the message
-        logger.debug(f"Checking for client budget in message: {incoming_msg}")
-        if "mi presupuesto es" in incoming_msg.lower() or "presupuesto de" in incoming_msg.lower():
-            budget = incoming_msg.lower().split("presupuesto")[-1].strip()
-            conversation_state[phone]['client_budget'] = budget
-            logger.info(f"Client budget set to: {budget}")
-            utils.save_client_info(phone, conversation_state, GCS_BUCKET_NAME, GCS_CONVERSATIONS_PATH)
-
-        # Check for preferred days and time in the message
-        logger.debug(f"Checking for preferred days/time in message: {incoming_msg}")
-        if "prefiero ser contactado" in incoming_msg.lower() or "horario" in incoming_msg.lower():
-            if "prefiero ser contactado" in incoming_msg.lower():
-                days = incoming_msg.lower().split("prefiero ser contactado")[-1].strip()
-                conversation_state[phone]['preferred_days'] = days
-                logger.info(f"Preferred days set to: {days}")
-            if "horario" in incoming_msg.lower():
-                time = incoming_msg.lower().split("horario")[-1].strip()
-                conversation_state[phone]['preferred_time'] = time
-                logger.info(f"Preferred time set to: {time}")
-            utils.save_client_info(phone, conversation_state, GCS_BUCKET_NAME, GCS_CONVERSATIONS_PATH)
 
         # Check for no-interest phrases
         logger.debug(f"Checking for no-interest phrases in message: {incoming_msg}")
@@ -499,7 +456,7 @@ def handle_client_message(phone, incoming_msg, num_media, media_url=None):
         if faq_answer:
             messages = [f"Según lo que ya hemos investigado: {faq_answer}"]
         else:
-            # Process the message and generate a response
+            # Process the message using AI for a more natural response
             logger.debug(f"Processing message with message_handler: {incoming_msg}")
             messages, mentioned_project = message_handler.process_message(
                 incoming_msg, phone, conversation_state, project_info, conversation_history
@@ -508,7 +465,7 @@ def handle_client_message(phone, incoming_msg, num_media, media_url=None):
             logger.debug(f"Mentioned project after processing: {mentioned_project}")
 
             # If the bot needs to contact the gerente
-            if "Permíteme, déjame revisar esto con el gerente." in messages:
+            if "No tengo esa información a la mano, pero puedo revisarlo con el gerente, te parece?" in messages:
                 conversation_state[phone]['pending_question'] = {
                     'question': incoming_msg,
                     'mentioned_project': mentioned_project,
@@ -636,7 +593,7 @@ def whatsapp():
                 }
 
             # Check if the client has been introduced; if not, introduce the bot
-            if not conversation_state[phone].get('introduced', False) and not conversation_state[phone].get('client_name'):
+            if not conversation_state[phone].get('introduced', False):
                 conversation_state[phone]['introduced'] = True
                 conversation_state[phone]['name_asked'] = 1
                 messages = ["Hola, soy Giselle de FAV Living, desarrolladora inmobiliaria. Podrías darme tu nombre para registrarte?"]
