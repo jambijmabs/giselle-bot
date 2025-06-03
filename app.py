@@ -14,8 +14,7 @@ from google.cloud import storage
 
 # Configuration Section
 WHATSAPP_SENDER_NUMBER = "whatsapp:+18188732305"
-# Lista de números de gerentes (solo el número en formato E.164, con prefijo +)
-GERENTE_NUMBERS = ["+5218110665094"]  # Número del gerente corregido
+GERENTE_NUMBERS = ["+5218110665094"]
 GERENTE_ROLE = bot_config.GERENTE_ROLE
 TWILIO_ACCOUNT_SID = os.getenv('TWILIO_ACCOUNT_SID')
 TWILIO_AUTH_TOKEN = os.getenv('TWILIO_AUTH_TOKEN')
@@ -24,7 +23,7 @@ GCS_BUCKET_NAME = "giselle-projects"
 GCS_BASE_PATH = "PROYECTOS"
 GCS_CONVERSATIONS_PATH = "CONVERSATIONS"
 STATE_FILE = "conversation_state.json"
-FAQ_RESPONSE_DELAY = 30  # 30 seconds delay for FAQ response
+FAQ_RESPONSE_DELAY = 30
 DEFAULT_PORT = 8080
 
 # Configure logging
@@ -63,13 +62,10 @@ if not OPENAI_API_KEY:
 conversation_state = {}
 
 def handle_gerente_message(phone, incoming_msg):
-    """Handle messages from the gerente with a natural and professional flow."""
     logger.info(f"Handling message from gerente ({phone})")
 
-    # Convert message to lowercase for easier comparison
     incoming_msg_lower = incoming_msg.lower()
 
-    # Check if the gerente is responding to a pending client question
     pending_question = None
     for client_phone, state in conversation_state.items():
         if not state.get('is_gerente', False) and state.get('pending_question'):
@@ -79,43 +75,36 @@ def handle_gerente_message(phone, incoming_msg):
 
     if pending_question:
         logger.debug(f"Found pending question for client {pending_question['client_phone']}: {pending_question}")
-        # The gerente's message is a response to the pending question
         client_phone = pending_question['client_phone']
         question = pending_question['question']
         mentioned_project = pending_question.get('mentioned_project')
-        answer = incoming_msg  # The gerente's message is the answer
+        answer = incoming_msg
 
-        # Basic validation of the answer's relevance
         if len(answer) < 5 or answer.lower() in ["hola", "sí", "no", "ok"]:
             logger.warning(f"Gerente response '{answer}' seems irrelevant for question '{question}'")
             utils.send_consecutive_messages(
                 phone,
-                ["Tu respuesta parece poco clara. ¿Podrías proporcionar más detalles?"],
+                ["Tu respuesta parece poco clara. Podrías proporcionar más detalles?"],
                 client,
                 WHATSAPP_SENDER_NUMBER
             )
             return "Respuesta poco clara", 200
 
-        # Prepare the response for the client
         gerente_messages = [f"Gracias por esperar. Sobre tu pregunta: {answer}"]
         utils.send_consecutive_messages(client_phone, gerente_messages, client, WHATSAPP_SENDER_NUMBER)
 
-        # Update the client's conversation state
         conversation_state[client_phone]['history'].append(f"Giselle: {gerente_messages[0]}")
         conversation_state[client_phone]['pending_question'] = None
         conversation_state[client_phone]['pending_response_time'] = None
         logger.debug(f"Updated client {client_phone} history: {conversation_state[client_phone]['history']}")
 
-        # Save the question and answer to the FAQ file
         faq_entry = f"Pregunta: {question}\nRespuesta: {answer}\n"
-        # Standardize project names for GCS paths
         project_folder = mentioned_project.upper() if mentioned_project else "GENERAL"
         faq_file_name = f"{mentioned_project.lower()}_faq.txt" if mentioned_project else "general_faq.txt"
         faq_file_path = os.path.join(GCS_BASE_PATH, project_folder, faq_file_name)
         logger.debug(f"Attempting to save FAQ entry to {faq_file_path}: {faq_entry}")
 
         try:
-            # Download existing FAQ file from GCS, if it exists
             temp_faq_path = f"/tmp/{faq_file_name}"
             try:
                 storage_client = storage.Client()
@@ -126,38 +115,32 @@ def handle_gerente_message(phone, incoming_msg):
             except Exception as e:
                 logger.warning(f"No existing FAQ file found at {faq_file_path}, creating new file: {str(e)}")
                 with open(temp_faq_path, 'w') as f:
-                    pass  # Create empty file
+                    pass
 
-            # Append the new FAQ entry
             with open(temp_faq_path, 'a', encoding='utf-8') as f:
                 f.write(faq_entry)
             logger.debug(f"Appended FAQ entry to local file: {temp_faq_path}")
 
-            # Upload the updated FAQ file back to GCS
             blob.upload_from_filename(temp_faq_path)
             logger.info(f"Uploaded updated FAQ file to GCS: {faq_file_path}")
 
-            # Clean up temporary file
             os.remove(temp_faq_path)
         except Exception as e:
             logger.error(f"Failed to save FAQ entry to {faq_file_path}: {str(e)}")
 
-        # Save conversation state and history
         utils.save_conversation_state(conversation_state, GCS_BUCKET_NAME, GCS_CONVERSATIONS_PATH)
         utils.save_conversation_history(client_phone, conversation_state[client_phone]['history'], GCS_BUCKET_NAME, GCS_CONVERSATIONS_PATH)
         utils.save_client_info(client_phone, conversation_state, GCS_BUCKET_NAME, GCS_CONVERSATIONS_PATH)
 
-        # Notify the gerente that the response was sent
-        utils.send_consecutive_messages(phone, ["Respuesta enviada al cliente. ¿Necesitas algo más?"], client, WHATSAPP_SENDER_NUMBER)
+        utils.send_consecutive_messages(phone, ["Respuesta enviada al cliente. Necesitas algo más?"], client, WHATSAPP_SENDER_NUMBER)
         return "Mensaje enviado", 200
 
-    # Handle gerente requests for reports or client details
     if "reporte" in incoming_msg_lower or "interesados" in incoming_msg_lower:
         logger.info(f"Gerente ({phone}) requested a report of interested clients")
         report_messages = utils.generate_interested_report(conversation_state)
         utils.send_consecutive_messages(phone, report_messages, client, WHATSAPP_SENDER_NUMBER)
         logger.debug(f"Sent report to gerente: {report_messages}")
-        utils.send_consecutive_messages(phone, ["¿Necesitas algo más?"], client, WHATSAPP_SENDER_NUMBER)
+        utils.send_consecutive_messages(phone, ["Necesitas algo más?"], client, WHATSAPP_SENDER_NUMBER)
         return "Reporte enviado", 200
 
     if "nombres" in incoming_msg_lower or "clientes" in incoming_msg_lower:
@@ -176,10 +159,9 @@ def handle_gerente_message(phone, incoming_msg):
         else:
             messages = ["No hay clientes interesados registrados en este momento."]
         utils.send_consecutive_messages(phone, messages, client, WHATSAPP_SENDER_NUMBER)
-        utils.send_consecutive_messages(phone, ["¿Necesitas algo más?"], client, WHATSAPP_SENDER_NUMBER)
+        utils.send_consecutive_messages(phone, ["Necesitas algo más?"], client, WHATSAPP_SENDER_NUMBER)
         return "Nombres enviados", 200
 
-    # Functionality: Mark a client as priority
     if "marca" in incoming_msg_lower and "prioritario" in incoming_msg_lower:
         logger.info(f"Gerente ({phone}) requested to mark a client as priority")
         client_phone = None
@@ -190,21 +172,19 @@ def handle_gerente_message(phone, incoming_msg):
         if client_phone and not conversation_state[client_phone].get('is_gerente', False):
             conversation_state[client_phone]['priority'] = True
             utils.save_conversation_state(conversation_state, GCS_BUCKET_NAME, GCS_CONVERSATIONS_PATH)
-            utils.send_consecutive_messages(phone, [f"Cliente {client_phone} marcado como prioritario 🌟.", "¿Necesitas algo más?"], client, WHATSAPP_SENDER_NUMBER)
+            utils.send_consecutive_messages(phone, [f"Cliente {client_phone} marcado como prioritario.", "Necesitas algo más?"], client, WHATSAPP_SENDER_NUMBER)
             return "Cliente marcado como prioritario", 200
         else:
-            utils.send_consecutive_messages(phone, ["No encontré al cliente especificado o es un gerente.", "¿En qué más puedo asistirte?"], client, WHATSAPP_SENDER_NUMBER)
+            utils.send_consecutive_messages(phone, ["No encontré al cliente especificado o es un gerente.", "En qué más puedo asistirte?"], client, WHATSAPP_SENDER_NUMBER)
             return "Cliente no encontrado", 200
 
-    # Functionality: Daily Activity Summary
     if "resumen del día" in incoming_msg_lower:
         logger.info(f"Gerente ({phone}) requested daily activity summary")
         summary_messages = utils.generate_daily_summary(conversation_state)
         utils.send_consecutive_messages(phone, summary_messages, client, WHATSAPP_SENDER_NUMBER)
-        utils.send_consecutive_messages(phone, ["¿Necesitas algo más?"], client, WHATSAPP_SENDER_NUMBER)
+        utils.send_consecutive_messages(phone, ["Necesitas algo más?"], client, WHATSAPP_SENDER_NUMBER)
         return "Resumen enviado", 200
 
-    # Functionality: Assign Task for a Client
     if "llamar a" in incoming_msg_lower and "mañana" in incoming_msg_lower:
         logger.info(f"Gerente ({phone}) requested to assign a task")
         client_phone = None
@@ -213,8 +193,7 @@ def handle_gerente_message(phone, incoming_msg):
                 client_phone = number
                 break
         if client_phone and not conversation_state[client_phone].get('is_gerente', False):
-            # Extract time if specified (e.g., "a las 10 AM")
-            time_str = "10:00 AM"  # Default time
+            time_str = "10:00 AM"
             time_match = re.search(r'a las (\d{1,2}(?::\d{2})?\s*(?:AM|PM))', incoming_msg_lower, re.IGNORECASE)
             if time_match:
                 time_str = time_match.group(1)
@@ -228,13 +207,12 @@ def handle_gerente_message(phone, incoming_msg):
                 conversation_state[phone]['tasks'] = []
             conversation_state[phone]['tasks'].append(task)
             utils.save_conversation_state(conversation_state, GCS_BUCKET_NAME, GCS_CONVERSATIONS_PATH)
-            utils.send_consecutive_messages(phone, [f"Tarea asignada: Llamar a {client_phone} mañana a las {time_str} 📞.", "¿Necesitas algo más?"], client, WHATSAPP_SENDER_NUMBER)
+            utils.send_consecutive_messages(phone, [f"Tarea asignada: Llamar a {client_phone} mañana a las {time_str}.", "Necesitas algo más?"], client, WHATSAPP_SENDER_NUMBER)
             return "Tarea asignada", 200
         else:
-            utils.send_consecutive_messages(phone, ["No encontré al cliente especificado o es un gerente.", "¿En qué más puedo asistirte?"], client, WHATSAPP_SENDER_NUMBER)
+            utils.send_consecutive_messages(phone, ["No encontré al cliente especificado o es un gerente.", "En qué más puedo asistirte?"], client, WHATSAPP_SENDER_NUMBER)
             return "Cliente no encontrado", 200
 
-    # New Functionality: Search Client Information
     if "busca a" in incoming_msg_lower:
         logger.info(f"Gerente ({phone}) requested to search client information")
         client_phone = None
@@ -250,32 +228,29 @@ def handle_gerente_message(phone, incoming_msg):
             status = 'Esperando Respuesta' if state.get('pending_question') else 'No Interesado' if state.get('no_interest', False) else 'Interesado'
             last_messages = state.get('history', [])[-3:] if state.get('history') else ['Sin mensajes']
             messages = [
-                f"📋 *Información del Cliente {client_phone}* 📋",
-                f"👤 Nombre: {client_name}",
-                f"🏢 Proyecto: {project}",
-                f"💰 Presupuesto: {budget}",
-                f"📊 Estado: {status}",
-                "🗨️ Últimos mensajes:"
+                f"Información del Cliente {client_phone}",
+                f"Nombre: {client_name}",
+                f"Proyecto: {project}",
+                f"Presupuesto: {budget}",
+                f"Estado: {status}",
+                "Últimos mensajes:"
             ]
             messages.extend([f"- {msg}" for msg in last_messages])
             utils.send_consecutive_messages(phone, messages, client, WHATSAPP_SENDER_NUMBER)
-            utils.send_consecutive_messages(phone, ["¿Necesitas algo más?"], client, WHATSAPP_SENDER_NUMBER)
+            utils.send_consecutive_messages(phone, ["Necesitas algo más?"], client, WHATSAPP_SENDER_NUMBER)
             return "Información enviada", 200
         else:
-            utils.send_consecutive_messages(phone, ["No encontré al cliente especificado o es un gerente.", "¿En qué más puedo asistirte?"], client, WHATSAPP_SENDER_NUMBER)
+            utils.send_consecutive_messages(phone, ["No encontré al cliente especificado o es un gerente.", "En qué más puedo asistirte?"], client, WHATSAPP_SENDER_NUMBER)
             return "Cliente no encontrado", 200
 
-    # New Functionality: Add or Edit FAQ Entry
     if "añade faq" in incoming_msg_lower or "agrega faq" in incoming_msg_lower:
         logger.info(f"Gerente ({phone}) requested to add/edit an FAQ entry")
-        # Expected format: "Añade FAQ para [Proyecto]: Pregunta: [Pregunta] Respuesta: [Respuesta]"
         match = re.search(r'para (\w+): Pregunta: (.+?) Respuesta: (.+)', incoming_msg, re.IGNORECASE)
         if match:
             project = match.group(1)
             question = match.group(2)
             answer = match.group(3)
 
-            # Save the FAQ entry
             faq_entry = f"Pregunta: {question}\nRespuesta: {answer}\n"
             project_folder = project.upper()
             faq_file_name = f"{project.lower()}_faq.txt"
@@ -283,7 +258,6 @@ def handle_gerente_message(phone, incoming_msg):
             logger.debug(f"Attempting to save FAQ entry to {faq_file_path}: {faq_entry}")
 
             try:
-                # Download existing FAQ file from GCS, if it exists
                 temp_faq_path = f"/tmp/{faq_file_name}"
                 try:
                     storage_client = storage.Client()
@@ -294,21 +268,17 @@ def handle_gerente_message(phone, incoming_msg):
                 except Exception as e:
                     logger.warning(f"No existing FAQ file found at {faq_file_path}, creating new file: {str(e)}")
                     with open(temp_faq_path, 'w') as f:
-                        pass  # Create empty file
+                        pass
 
-                # Append the new FAQ entry
                 with open(temp_faq_path, 'a', encoding='utf-8') as f:
                     f.write(faq_entry)
                 logger.debug(f"Appended FAQ entry to local file: {temp_faq_path}")
 
-                # Upload the updated FAQ file back to GCS
                 blob.upload_from_filename(temp_faq_path)
                 logger.info(f"Uploaded updated FAQ file to GCS: {faq_file_path}")
 
-                # Clean up temporary file
                 os.remove(temp_faq_path)
 
-                # Update in-memory faq_data
                 project_key = project.lower()
                 if project_key not in utils.faq_data:
                     utils.faq_data[project_key] = {}
@@ -316,29 +286,26 @@ def handle_gerente_message(phone, incoming_msg):
                 logger.debug(f"Updated faq_data[{project_key}]")
             except Exception as e:
                 logger.error(f"Failed to save FAQ entry to {faq_file_path}: {str(e)}")
-                utils.send_consecutive_messages(phone, ["Ocurrió un error al guardar la FAQ. 😓", "¿En qué más puedo asistirte?"], client, WHATSAPP_SENDER_NUMBER)
+                utils.send_consecutive_messages(phone, ["Ocurrió un error al guardar la FAQ.", "En qué más puedo asistirte?"], client, WHATSAPP_SENDER_NUMBER)
                 return "Error al guardar FAQ", 500
 
-            utils.send_consecutive_messages(phone, [f"FAQ añadida para {project}: {question} ✅.", "¿Necesitas algo más?"], client, WHATSAPP_SENDER_NUMBER)
+            utils.send_consecutive_messages(phone, [f"FAQ añadida para {project}: {question}.", "Necesitas algo más?"], client, WHATSAPP_SENDER_NUMBER)
             return "FAQ añadida", 200
         else:
-            utils.send_consecutive_messages(phone, ["Formato incorrecto. Usa: Añade FAQ para [Proyecto]: Pregunta: [Pregunta] Respuesta: [Respuesta]", "¿En qué más puedo asistirte?"], client, WHATSAPP_SENDER_NUMBER)
+            utils.send_consecutive_messages(phone, ["Formato incorrecto. Usa: Añade FAQ para [Proyecto]: Pregunta: [Pregunta] Respuesta: [Respuesta]", "En qué más puedo asistirte?"], client, WHATSAPP_SENDER_NUMBER)
             return "Formato incorrecto", 200
 
-    # Default response for unrecognized requests
     messages = [
-        "No entendí tu solicitud. Puedo ayudarte con reportes de interesados 📊, nombres de clientes 👥, responder dudas de clientes ❓, marcar clientes como prioritarios 🌟, asignar tareas 📞, buscar clientes 📋, o añadir FAQs ✅.",
-        "¿En qué más puedo asistirte?"
+        "No entendí tu solicitud. Puedo ayudarte con reportes de interesados, nombres de clientes, responder dudas de clientes, marcar clientes como prioritarios, asignar tareas, buscar clientes, o añadir FAQs.",
+        "En qué más puedo asistirte?"
     ]
     utils.send_consecutive_messages(phone, messages, client, WHATSAPP_SENDER_NUMBER)
     return "Mensaje recibido", 200
 
 def handle_client_message(phone, incoming_msg, num_media, media_url=None):
-    """Handle messages from clients with improved error handling and debugging."""
     logger.info(f"Handling message from client ({phone})")
 
     try:
-        # Load conversation history with error handling
         logger.debug(f"Loading conversation history for {phone}")
         try:
             history = utils.load_conversation_history(phone, GCS_BUCKET_NAME, GCS_CONVERSATIONS_PATH)
@@ -349,7 +316,6 @@ def handle_client_message(phone, incoming_msg, num_media, media_url=None):
             logger.error(f"Failed to load conversation history for {phone}: {str(e)}")
             history = []
 
-        # Update conversation state for the client
         logger.debug(f"Updating conversation state for {phone}")
         if phone not in conversation_state:
             logger.warning(f"Client {phone} not found in conversation_state, initializing")
@@ -378,30 +344,26 @@ def handle_client_message(phone, incoming_msg, num_media, media_url=None):
                 'priority': False
             }
 
-        # Ensure history is a list before updating
         conversation_state[phone]['history'] = history
         conversation_state[phone]['history'].append(f"Cliente: {incoming_msg}")
         conversation_state[phone]['history'] = conversation_state[phone]['history'][-10:]
         conversation_state[phone]['last_contact'] = datetime.now().isoformat()
         conversation_state[phone]['messages_since_budget_ask'] = conversation_state[phone].get('messages_since_budget_ask', 0) + 1
 
-        # Notify gerente if the client is priority
         if conversation_state[phone].get('priority', False):
             for gerente_phone in [p for p, s in conversation_state.items() if s.get('is_gerente', False)]:
                 utils.send_consecutive_messages(
                     gerente_phone,
-                    [f"🌟 Cliente prioritario {phone} ha enviado un mensaje: {incoming_msg}"],
+                    [f"Cliente prioritario {phone} ha enviado un mensaje: {incoming_msg}"],
                     client,
                     WHATSAPP_SENDER_NUMBER
                 )
 
-        # Check for pending responses (client side)
         logger.debug(f"Checking for pending responses for {phone}")
         if conversation_state[phone].get('pending_response_time'):
             current_time = time.time()
             elapsed_time = current_time - conversation_state[phone]['pending_response_time']
             if elapsed_time >= FAQ_RESPONSE_DELAY:
-                # Enough time has passed; fetch the response from FAQ
                 question = conversation_state[phone].get('pending_question', {}).get('question')
                 mentioned_project = conversation_state[phone].get('pending_question', {}).get('mentioned_project')
                 if question:
@@ -416,7 +378,7 @@ def handle_client_message(phone, incoming_msg, num_media, media_url=None):
                         logger.debug(f"Sent gerente response to client {phone}: {messages}")
                     else:
                         logger.error(f"Could not find answer for question '{question}' in FAQ.")
-                        messages = ["Lo siento, no pude encontrar una respuesta. ¿En qué más puedo ayudarte?"]
+                        messages = ["Lo siento, no pude encontrar una respuesta. En qué más puedo ayudarte?"]
                         utils.send_consecutive_messages(phone, messages, client, WHATSAPP_SENDER_NUMBER)
                         conversation_state[phone]['history'].append(f"Giselle: {messages[0]}")
                         conversation_state[phone]['pending_question'] = None
@@ -438,12 +400,29 @@ def handle_client_message(phone, incoming_msg, num_media, media_url=None):
             conversation_state[phone]['client_name'] = name.capitalize()
             logger.info(f"Client name set to: {conversation_state[phone]['client_name']}")
             utils.save_client_info(phone, conversation_state, GCS_BUCKET_NAME, GCS_CONVERSATIONS_PATH)
+            # Increment name_asked to avoid re-asking
+            conversation_state[phone]['name_asked'] = conversation_state[phone].get('name_asked', 0) + 1
+            messages = ["Gracias por compartir tu nombre. Tienes un presupuesto en mente?"]
+            utils.send_consecutive_messages(phone, messages, client, WHATSAPP_SENDER_NUMBER)
+            conversation_state[phone]['history'].append(f"Giselle: {messages[0]}")
+            utils.save_conversation_state(conversation_state, GCS_BUCKET_NAME, GCS_CONVERSATIONS_PATH)
+            utils.save_conversation_history(phone, conversation_state[phone]['history'], GCS_BUCKET_NAME, GCS_CONVERSATIONS_PATH)
+            utils.save_client_info(phone, conversation_state, GCS_BUCKET_NAME, GCS_CONVERSATIONS_PATH)
+            return "Mensaje enviado", 200
         elif conversation_state[phone].get('name_asked', 0) > 0 and not conversation_state[phone].get('client_name'):
             name = incoming_msg.strip()
             if name and name.lower() != 'hola':
                 conversation_state[phone]['client_name'] = name.capitalize()
                 logger.info(f"Client name set to: {conversation_state[phone]['client_name']}")
                 utils.save_client_info(phone, conversation_state, GCS_BUCKET_NAME, GCS_CONVERSATIONS_PATH)
+                conversation_state[phone]['name_asked'] = conversation_state[phone].get('name_asked', 0) + 1
+                messages = ["Gracias por compartir tu nombre. Tienes un presupuesto en mente?"]
+                utils.send_consecutive_messages(phone, messages, client, WHATSAPP_SENDER_NUMBER)
+                conversation_state[phone]['history'].append(f"Giselle: {messages[0]}")
+                utils.save_conversation_state(conversation_state, GCS_BUCKET_NAME, GCS_CONVERSATIONS_PATH)
+                utils.save_conversation_history(phone, conversation_state[phone]['history'], GCS_BUCKET_NAME, GCS_CONVERSATIONS_PATH)
+                utils.save_client_info(phone, conversation_state, GCS_BUCKET_NAME, GCS_CONVERSATIONS_PATH)
+                return "Mensaje enviado", 200
 
         # Check for client budget in the message
         logger.debug(f"Checking for client budget in message: {incoming_msg}")
@@ -503,7 +482,6 @@ def handle_client_message(phone, incoming_msg, num_media, media_url=None):
                 project_info += f"Proyecto: {project}\n"
                 project_info += "Es un desarrollo que creo que te va a interesar.\n"
                 project_info += "\n"
-                # Broaden the search to include condohotels as departments
                 if project.lower() in incoming_msg.lower() or ("departamentos" in incoming_msg.lower() and "condohotel" in data.get('type', '').lower()):
                     conversation_state[phone]['last_mentioned_project'] = project
         except Exception as project_info_e:
@@ -568,7 +546,7 @@ def handle_client_message(phone, incoming_msg, num_media, media_url=None):
 
     except Exception as e:
         logger.error(f"Error in handle_client_message for {phone}: {str(e)}", exc_info=True)
-        raise  # Re-raise the exception to be caught by the outer try-except in /whatsapp
+        raise
 
 @app.route('/whatsapp', methods=['POST'])
 def whatsapp():
@@ -578,16 +556,13 @@ def whatsapp():
             logger.error("Twilio client not initialized. Cannot process WhatsApp messages.")
             return "Error: Twilio client not initialized", 500
 
-        # Reload conversation state from GCS
         utils.load_conversation_state(conversation_state, GCS_BUCKET_NAME, GCS_CONVERSATIONS_PATH)
         logger.debug("Conversation state reloaded")
 
-        # Log request data for debugging
         logger.debug(f"Request headers: {dict(request.headers)}")
         logger.debug(f"Request form data: {request.form}")
         logger.debug(f"Request values: {dict(request.values)}")
 
-        # Extract phone, message, and media details
         logger.debug("Extracting message content")
         phone = request.values.get('From', '')
         incoming_msg = request.values.get('Body', '').strip()
@@ -600,13 +575,10 @@ def whatsapp():
             logger.error("No se encontró 'From' en la solicitud")
             return "Error: Solicitud incompleta", 400
 
-        # Primer candado: Identificar al gerente usando el número completo (From)
-        # Normalizar el número eliminando el prefijo whatsapp: y asegurando el formato
         normalized_phone = phone.replace("whatsapp:", "").strip()
         is_gerente = normalized_phone in GERENTE_NUMBERS
         logger.debug(f"Comparando número: phone='{phone}', normalized_phone='{normalized_phone}', GERENTE_NUMBERS={GERENTE_NUMBERS}, is_gerente={is_gerente}")
 
-        # Si es el gerente, inicializar su estado y dirigirlo al manejador de gerente
         if is_gerente:
             logger.info(f"Identificado como gerente: {phone}")
             if phone not in conversation_state:
@@ -620,10 +592,8 @@ def whatsapp():
             else:
                 conversation_state[phone]['is_gerente'] = True
 
-            # Si el gerente envía un mensaje de texto, procesarlo
             if incoming_msg:
                 return handle_gerente_message(phone, incoming_msg)
-            # Si el gerente envía un audio, procesarlo
             elif num_media > 0 and media_url:
                 error_messages, transcribed_msg = message_handler.handle_audio_message(
                     media_url, phone, TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN
@@ -637,10 +607,8 @@ def whatsapp():
                 logger.error("Mensaje del gerente sin contenido de texto o audio")
                 return "Error: Mensaje sin contenido", 400
 
-        # Si no es el gerente, tratar como cliente
         else:
             logger.info(f"Identificado como cliente: {phone}")
-            # Inicializar estado de cliente si no existe
             if phone not in conversation_state:
                 conversation_state[phone] = {
                     'history': [],
@@ -667,10 +635,20 @@ def whatsapp():
                     'priority': False
                 }
 
-            # Si el cliente envía un mensaje de texto, procesarlo
+            # Check if the client has been introduced; if not, introduce the bot
+            if not conversation_state[phone].get('introduced', False) and not conversation_state[phone].get('client_name'):
+                conversation_state[phone]['introduced'] = True
+                conversation_state[phone]['name_asked'] = 1
+                messages = ["Hola, soy Giselle de FAV Living, desarrolladora inmobiliaria. Podrías darme tu nombre para registrarte?"]
+                utils.send_consecutive_messages(phone, messages, client, WHATSAPP_SENDER_NUMBER)
+                conversation_state[phone]['history'].append(f"Giselle: {messages[0]}")
+                utils.save_conversation_state(conversation_state, GCS_BUCKET_NAME, GCS_CONVERSATIONS_PATH)
+                utils.save_conversation_history(phone, conversation_state[phone]['history'], GCS_BUCKET_NAME, GCS_CONVERSATIONS_PATH)
+                utils.save_client_info(phone, conversation_state, GCS_BUCKET_NAME, GCS_CONVERSATIONS_PATH)
+                return "Mensaje enviado", 200
+
             if incoming_msg:
                 return handle_client_message(phone, incoming_msg, num_media, media_url)
-            # Si el cliente envía un audio, procesarlo
             elif num_media > 0 and media_url:
                 error_messages, transcribed_msg = message_handler.handle_audio_message(
                     media_url, phone, TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN
@@ -697,12 +675,12 @@ def whatsapp():
                 return "Error: Invalid phone number format in exception handler", 400
             message = client.messages.create(
                 from_=WHATSAPP_SENDER_NUMBER,
-                body="Lo siento, ocurrió un error. ¿En qué más puedo ayudarte?",
+                body="Lo siento, ocurrió un error. En qué más puedo ayudarte?",
                 to=phone
             )
             logger.info(f"Fallback message sent: SID {message.sid}, Estado: {message.status}")
             if not conversation_state[phone].get('is_gerente', False):
-                conversation_state[phone]['history'].append("Giselle: Lo siento, ocurrió un error. ¿En qué más puedo ayudarte?")
+                conversation_state[phone]['history'].append("Giselle: Lo siento, ocurrió un error. En qué más puedo ayudarte?")
                 utils.save_conversation_state(conversation_state, GCS_BUCKET_NAME, GCS_CONVERSATIONS_PATH)
                 utils.save_conversation_history(phone, conversation_state[phone]['history'], GCS_BUCKET_NAME, GCS_CONVERSATIONS_PATH)
                 utils.save_client_info(phone, conversation_state, GCS_BUCKET_NAME, GCS_CONVERSATIONS_PATH)
@@ -725,7 +703,7 @@ def trigger_recontact():
     logger.info("Triggering recontact scheduling")
     current_time = datetime.now()
     for phone, state in list(conversation_state.items()):
-        if state.get('is_gerente', False):  # Skip gerente
+        if state.get('is_gerente', False):
             continue
         messages, should_update = bot_config.handle_recontact(phone, state, current_time)
         if messages:
