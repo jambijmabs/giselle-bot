@@ -61,6 +61,33 @@ if not OPENAI_API_KEY:
 # Global conversation state
 conversation_state = {}
 
+def rephrase_gerente_response(answer, client_name, question):
+    """Use AI to rephrase the gerente's response in a more friendly and natural way."""
+    prompt = (
+        f"Eres Giselle, una asesora de ventas profesional y amigable de FAV Living. "
+        f"Tu tarea es reformular la respuesta del gerente para que sea más cálida y natural, manteniendo la información clave. "
+        f"La respuesta será enviada a un cliente llamado {client_name}, quien hizo la pregunta: '{question}'. "
+        f"Usa un tono profesional pero cercano, y asegúrate de que el mensaje sea breve y claro.\n\n"
+        f"Respuesta del gerente: {answer}\n\n"
+        f"Reformula la respuesta:"
+    )
+
+    try:
+        response = message_handler.openai_client.chat.completions.create(
+            model=bot_config.CHATGPT_MODEL,
+            messages=[
+                {"role": "system", "content": prompt},
+                {"role": "user", "content": answer}
+            ],
+            max_tokens=100,
+            temperature=0.7
+        )
+        rephrased = response.choices[0].message.content.strip()
+        return rephrased
+    except Exception as e:
+        logger.error(f"Error rephrasing gerente response with OpenAI: {str(e)}")
+        return f"Gracias por esperar, {client_name}. Sobre tu pregunta: {answer}"
+
 def handle_gerente_message(phone, incoming_msg):
     logger.info(f"Handling message from gerente ({phone})")
 
@@ -90,7 +117,10 @@ def handle_gerente_message(phone, incoming_msg):
             )
             return "Respuesta poco clara", 200
 
-        gerente_messages = [f"Gracias por esperar. Sobre tu pregunta: {answer}"]
+        # Rephrase the gerente's response using AI
+        client_name = conversation_state[client_phone].get('client_name', 'Cliente') or 'Cliente'
+        rephrased_answer = rephrase_gerente_response(answer, client_name, question)
+        gerente_messages = [rephrased_answer]
         utils.send_consecutive_messages(client_phone, gerente_messages, client, WHATSAPP_SENDER_NUMBER)
 
         conversation_state[client_phone]['history'].append(f"Giselle: {gerente_messages[0]}")
@@ -322,9 +352,6 @@ def handle_client_message(phone, incoming_msg, num_media, media_url=None):
             conversation_state[phone] = {
                 'history': [],
                 'name_asked': 0,
-                'budget_asked': 0,
-                'contact_time_asked': 0,
-                'messages_since_budget_ask': 0,
                 'messages_without_response': 0,
                 'preferred_time': None,
                 'preferred_days': None,
@@ -348,7 +375,6 @@ def handle_client_message(phone, incoming_msg, num_media, media_url=None):
         conversation_state[phone]['history'].append(f"Cliente: {incoming_msg}")
         conversation_state[phone]['history'] = conversation_state[phone]['history'][-10:]
         conversation_state[phone]['last_contact'] = datetime.now().isoformat()
-        conversation_state[phone]['messages_since_budget_ask'] = conversation_state[phone].get('messages_since_budget_ask', 0) + 1
 
         if conversation_state[phone].get('priority', False):
             for gerente_phone in [p for p, s in conversation_state.items() if s.get('is_gerente', False)]:
@@ -370,7 +396,9 @@ def handle_client_message(phone, incoming_msg, num_media, media_url=None):
                     logger.debug(f"Fetching FAQ answer for question '{question}' about project '{mentioned_project}'")
                     answer = utils.get_faq_answer(question, mentioned_project)
                     if answer:
-                        messages = [f"Gracias por esperar. Sobre tu pregunta: {answer}"]
+                        client_name = conversation_state[phone].get('client_name', 'Cliente') or 'Cliente'
+                        rephrased_answer = rephrase_gerente_response(answer, client_name, question)
+                        messages = [rephrased_answer]
                         utils.send_consecutive_messages(phone, messages, client, WHATSAPP_SENDER_NUMBER)
                         conversation_state[phone]['history'].append(f"Giselle: {messages[0]}")
                         conversation_state[phone]['pending_question'] = None
@@ -395,38 +423,12 @@ def handle_client_message(phone, incoming_msg, num_media, media_url=None):
 
         # Use AI to extract the client name if not already set
         if not conversation_state[phone].get('client_name') and conversation_state[phone].get('name_asked', 0) > 0:
-            name = message_handler.extract_name(incoming_msg, conversation_state[phone]['history'])
+            name = message_handler.extract_name(incoming_msg, "\n".join(conversation_state[phone]['history']))
             if name:
                 conversation_state[phone]['client_name'] = name.capitalize()
                 logger.info(f"Client name set to: {conversation_state[phone]['client_name']}")
                 utils.save_client_info(phone, conversation_state, GCS_BUCKET_NAME, GCS_CONVERSATIONS_PATH)
                 conversation_state[phone]['name_asked'] = conversation_state[phone].get('name_asked', 0) + 1
-
-        # Check for no-interest phrases
-        logger.debug(f"Checking for no-interest phrases in message: {incoming_msg}")
-        if any(phrase in incoming_msg.lower() for phrase in bot_config.NO_INTEREST_PHRASES):
-            conversation_state[phone]['no_interest'] = True
-            messages = bot_config.handle_no_interest_response()
-            logger.info(f"Sending no-interest response: {messages}")
-            utils.send_consecutive_messages(phone, messages, client, WHATSAPP_SENDER_NUMBER)
-            conversation_state[phone]['history'].append(f"Giselle: {messages[0]}")
-            utils.save_conversation_state(conversation_state, GCS_BUCKET_NAME, GCS_CONVERSATIONS_PATH)
-            utils.save_conversation_history(phone, conversation_state[phone]['history'], GCS_BUCKET_NAME, GCS_CONVERSATIONS_PATH)
-            utils.save_client_info(phone, conversation_state, GCS_BUCKET_NAME, GCS_CONVERSATIONS_PATH)
-            return "Mensaje enviado", 200
-
-        # Check for recontact request
-        logger.debug(f"Checking for recontact request in message: {incoming_msg}")
-        recontact_response = bot_config.handle_recontact_request(incoming_msg, conversation_state[phone])
-        if recontact_response:
-            messages = recontact_response
-            logger.info(f"Sending recontact response: {messages}")
-            utils.send_consecutive_messages(phone, messages, client, WHATSAPP_SENDER_NUMBER)
-            conversation_state[phone]['history'].append(f"Giselle: {messages[0]}")
-            utils.save_conversation_state(conversation_state, GCS_BUCKET_NAME, GCS_CONVERSATIONS_PATH)
-            utils.save_conversation_history(phone, conversation_state[phone]['history'], GCS_BUCKET_NAME, GCS_CONVERSATIONS_PATH)
-            utils.save_client_info(phone, conversation_state, GCS_BUCKET_NAME, GCS_CONVERSATIONS_PATH)
-            return "Mensaje enviado", 200
 
         # Prepare project information
         logger.debug("Preparing project information")
@@ -454,7 +456,9 @@ def handle_client_message(phone, incoming_msg, num_media, media_url=None):
         mentioned_project = conversation_state[phone].get('last_mentioned_project')
         faq_answer = utils.get_faq_answer(incoming_msg, mentioned_project)
         if faq_answer:
-            messages = [f"Según lo que ya hemos investigado: {faq_answer}"]
+            client_name = conversation_state[phone].get('client_name', 'Cliente') or 'Cliente'
+            rephrased_answer = rephrase_gerente_response(faq_answer, client_name, incoming_msg)
+            messages = [rephrased_answer]
         else:
             # Process the message using AI for a more natural response
             logger.debug(f"Processing message with message_handler: {incoming_msg}")
@@ -465,7 +469,7 @@ def handle_client_message(phone, incoming_msg, num_media, media_url=None):
             logger.debug(f"Mentioned project after processing: {mentioned_project}")
 
             # If the bot needs to contact the gerente
-            if "No tengo esa información a la mano, pero puedo revisarlo con el gerente, te parece?" in messages:
+            if any("puedo revisarlo con el gerente" in msg for msg in messages):
                 conversation_state[phone]['pending_question'] = {
                     'question': incoming_msg,
                     'mentioned_project': mentioned_project,
@@ -570,9 +574,6 @@ def whatsapp():
                 conversation_state[phone] = {
                     'history': [],
                     'name_asked': 0,
-                    'budget_asked': 0,
-                    'contact_time_asked': 0,
-                    'messages_since_budget_ask': 0,
                     'messages_without_response': 0,
                     'preferred_time': None,
                     'preferred_days': None,
