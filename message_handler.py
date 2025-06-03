@@ -96,9 +96,9 @@ def process_message(incoming_msg, phone, conversation_state, project_info, conve
     
     # Broaden the project detection to include types like condohotel
     for project in projects_data.keys():
-        project_data = projects_data[project]
-        project_type = project_data.get('type', '').lower()
-        location = project_data.get('location', '').lower()
+        project_data = projects_data.get(project, {})
+        project_type = project_data.get('type', '').lower() if isinstance(project_data, dict) else ''
+        location = project_data.get('location', '').lower() if isinstance(project_data, dict) else ''
         
         # Check for project name, location, or type in the message
         if (project.lower() in normalized_msg or
@@ -114,9 +114,9 @@ def process_message(incoming_msg, phone, conversation_state, project_info, conve
         for msg in conversation_history.split('\n'):
             normalized_hist_msg = msg.lower().replace(" ", "")
             for project in projects_data.keys():
-                project_data = projects_data[project]
-                project_type = project_data.get('type', '').lower()
-                location = project_data.get('location', '').lower()
+                project_data = projects_data.get(project, {})
+                project_type = project_data.get('type', '').lower() if isinstance(project_data, dict) else ''
+                location = project_data.get('location', '').lower() if isinstance(project_data, dict) else ''
                 if (project.lower() in normalized_hist_msg or
                     (location and location in normalized_hist_msg) or
                     ("departamentos" in normalized_hist_msg and "condohotel" in project_type) or
@@ -135,10 +135,15 @@ def process_message(incoming_msg, phone, conversation_state, project_info, conve
     logger.debug(f"Using client_name: {client_name}")
 
     # Prepare the project data for the AI
-    project_data = projects_data.get(mentioned_project, "Información no disponible para este proyecto.")
+    project_data_dict = projects_data.get(mentioned_project, {})
+    if not isinstance(project_data_dict, dict):
+        logger.warning(f"project_data for {mentioned_project} is not a dict: {project_data_dict}")
+        project_data_dict = {}
+    
+    project_data = project_data_dict.get('description', "Información no disponible para este proyecto.")
     project_data += "\n\n**Información Adicional:**\n"
-    project_data += f"Tipo: {projects_data.get(mentioned_project, {}).get('type', 'No especificado')}\n"
-    project_data += f"Ubicación: {projects_data.get(mentioned_project, {}).get('location', 'No especificada')}\n"
+    project_data += f"Tipo: {project_data_dict.get('type', 'No especificado')}\n"
+    project_data += f"Ubicación: {project_data_dict.get('location', 'No especificada')}\n"
 
     # Build the prompt for the AI
     prompt = (
