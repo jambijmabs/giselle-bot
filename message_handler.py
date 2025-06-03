@@ -144,6 +144,35 @@ def detect_intention(incoming_msg, conversation_history, is_gerente=False):
         logger.error(f"Error detecting intention with OpenAI: {str(e)}")
         return {"intention": "unknown", "data": {}}
 
+def needs_gerente_contact(response, question, project_data):
+    """Use AI to determine if the response indicates the bot lacks information and needs to contact the gerente."""
+    prompt = (
+        "Eres un asistente que evalúa si una respuesta indica que el bot no tiene información suficiente y necesita consultar a un gerente. "
+        "Analiza la respuesta generada por el bot, la pregunta del cliente, y los datos del proyecto. "
+        "Si la respuesta implica que el bot no tiene la información exacta o completa para responder la pregunta (por ejemplo, si dice que algo 'no está confirmado' o que 'necesita verificar'), retorna True. "
+        "Si la respuesta es clara y utiliza información disponible en los datos del proyecto, retorna False. "
+        "Devuelve únicamente True o False en formato de texto plano.\n\n"
+        f"Pregunta del cliente: {question}\n"
+        f"Respuesta del bot: {response}\n"
+        f"Datos del proyecto: {project_data}"
+    )
+
+    try:
+        response = openai_client.chat.completions.create(
+            model=bot_config.CHATGPT_MODEL,
+            messages=[
+                {"role": "system", "content": prompt},
+                {"role": "user", "content": ""}
+            ],
+            max_tokens=10,
+            temperature=0.5
+        )
+        result = response.choices[0].message.content.strip().lower()
+        return result == "true"
+    except Exception as e:
+        logger.error(f"Error determining if gerente contact is needed: {str(e)}")
+        return False  # Fallback to False to avoid breaking the flow
+
 def process_message(incoming_msg, phone, conversation_state, project_info, conversation_history):
     logger.debug(f"Processing message: {incoming_msg}")
     messages = []
@@ -249,8 +278,7 @@ def process_message(incoming_msg, phone, conversation_state, project_info, conve
             f"{conversation_history}\n\n"
             f"Mensaje del cliente: {incoming_msg}\n\n"
             f"Responde de forma breve, natural y profesional, enfocándote en generar interés en los proyectos. "
-            f"Si el cliente pregunta por algo que no está en los datos del proyecto y es inherente al proyecto (como amenidades específicas), responde con una frase como "
-            f"'No tengo esa información a la mano, pero puedo revisarlo con el gerente, ¿te parece?'"
+            f"Si el cliente pregunta por algo que no está en los datos del proyecto y es inherente al proyecto (como amenidades específicas o fechas exactas de entrega), responde indicando que no tienes esa información y que puedes consultar con el gerente."
         )
         logger.debug(f"Sending request to OpenAI for client message: '{incoming_msg}', project: {mentioned_project}")
 
@@ -267,62 +295,37 @@ def process_message(incoming_msg, phone, conversation_state, project_info, conve
             reply = response.choices[0].message.content.strip()
             logger.debug(f"Generated response from OpenAI: {reply}")
 
-            if "no tengo esa información" in reply.lower() or "puedo revisarlo con el gerente" in reply.lower():
-                logger.info(f"Bot cannot answer: {incoming_msg}. Contacting gerente.")
-                messages.append(f"No tengo esa información a la mano, {client_name}, pero puedo revisarlo con el gerente, ¿te parece?")
-                
-                project_context = f"sobre {mentioned_project}" if mentioned_project else "general"
-                gerente_message = f"Pregunta de {client_name} {project_context}: {incoming_msg}"
-                logger.debug(f"Preparing to send message to gerente: {gerente_message}")
-                logger.debug(f"Sending to gerente_phone: {gerente_phone} from {whatsapp_sender_number}")
+            # Split the response into messages
+            current_message = ""
+            sentences = reply.split('. ')
+            for sentence in sentences:
+                if not sentence:
+                    continue
+                sentence = sentence.strip()
+                if sentence:
+                    if len(current_message.split('\n')) < 2 and len(current_message) < 100:
+                        current_message += (sentence + '. ') if current_message else sentence + '. '
+                    else:
+                        messages.append(current_message.strip())
+                        current_message = sentence + '. '
+            if current_message:
+                messages.append(current_message.strip())
 
-                try:
-                    if twilio_client is None:
-                        raise Exception("Twilio client not initialized.")
+            if not messages:
+                messages = [f"No tengo esa información a la mano, {client_name}, pero puedo revisarlo con el gerente si te parece."]
 
-                    logger.debug(f"Checking WhatsApp window for {gerente_phone}")
-                    window_active = check_whatsapp_window(gerente_phone)
-                    logger.debug(f"WhatsApp window active: {window_active}")
+            # Use AI to determine if the response indicates the bot needs to contact the gerente
+            if needs_gerente_contact(reply, incoming_msg, project_data):
+                messages.append(f"No tengo esa información exacta, {client_name}, pero puedo revisarlo con el gerente, ¿te parece?")
+                return messages, mentioned_project, True  # Indicate that gerente contact is needed
 
-                    message = twilio_client.messages.create(
-                        from_=whatsapp_sender_number,
-                        body=gerente_message,
-                        to=gerente_phone
-                    )
-                    logger.info(f"Sent message to gerente: SID {message.sid}, Estado: {message.status}")
-
-                    updated_message = twilio_client.messages(message.sid).fetch()
-                    logger.info(f"Estado del mensaje actualizado: {updated_message.status}")
-                    if updated_message.status == "failed":
-                        logger.error(f"Error al enviar mensaje al gerente: {updated_message.error_code} - {updated_message.error_message}")
-                        messages = [f"Lo siento, {client_name}, hubo un problema al contactar al gerente. ¿En qué más puedo ayudarte?"]
-                except Exception as twilio_e:
-                    logger.error(f"Error sending message to gerente via Twilio: {str(twilio_e)}", exc_info=True)
-                    messages = [f"Lo siento, {client_name}, hubo un problema al contactar al gerente. ¿En qué más puedo ayudarte?"]
-            else:
-                current_message = ""
-                sentences = reply.split('. ')
-                for sentence in sentences:
-                    if not sentence:
-                        continue
-                    sentence = sentence.strip()
-                    if sentence:
-                        if len(current_message.split('\n')) < 2 and len(current_message) < 100:
-                            current_message += (sentence + '. ') if current_message else sentence + '. '
-                        else:
-                            messages.append(current_message.strip())
-                            current_message = sentence + '. '
-                if current_message:
-                    messages.append(current_message.strip())
-
-                if not messages:
-                    messages = [f"No tengo esa información a la mano, {client_name}, pero puedo revisarlo con el gerente si te parece."]
         except Exception as openai_e:
             logger.error(f"Fallo con OpenAI API: {str(openai_e)}", exc_info=True)
             messages = [f"No tengo esa información a la mano, {client_name}, pero puedo revisarlo con el gerente si te parece."]
+            return messages, mentioned_project, True  # Indicate that gerente contact is needed
 
     logger.debug(f"Final messages: {messages}")
-    return messages, mentioned_project  # Ensure we always return a tuple
+    return messages, mentioned_project, False  # Default to no gerente contact needed
 
 def handle_audio_message(media_url, phone, twilio_account_sid, twilio_auth_token):
     logger.debug("Handling audio message")
