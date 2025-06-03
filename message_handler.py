@@ -402,4 +402,212 @@ def process_message(incoming_msg, phone, conversation_state, project_info, conve
                     temperature=0.7
                 )
                 reply = response.choices[0].message.content.strip()
-                logger.debug(f"Generated negotiation response from
+                logger.debug(f"Generated negotiation response from OpenAI: {reply}")
+
+                current_message = ""
+                sentences = reply.split('. ')
+                for sentence in sentences:
+                    if not sentence:
+                        continue
+                    sentence = sentence.strip()
+                    if sentence:
+                        if len(current_message.split('\n')) < 2 and len(current_message) < 100:
+                            current_message += (sentence + '. ') if current_message else sentence + '. '
+                        else:
+                            messages.append(current_message.strip())
+                            current_message = sentence + '. '
+                if current_message:
+                    messages.append(current_message.strip())
+
+                if not messages:
+                    messages = ["Entiendo, si tienes dudas, puedo agendar un Zoom con el gerente, te parece?"]
+
+            except Exception as openai_e:
+                logger.error(f"Fallo con OpenAI API en negociación: {str(openai_e)}", exc_info=True)
+                messages = ["Entiendo, si tienes dudas, puedo agendar un Zoom con el gerente, te parece?"]
+    elif intention == "confirm_sale":
+        if "sí" in incoming_msg.lower() or "si" in incoming_msg.lower() or "confirmo" in incoming_msg.lower():
+            messages = [
+                "Felicidades por tu decisión! La unidad 2B de MUWAN está apartada para ti.",
+                "Te enviaré los datos bancarios para el depósito de $10,000 USD. Confirmaré la recepción del depósito para seguir con el proceso."
+            ]
+            conversation_state[phone]['stage'] = "sale_closed"
+        else:
+            messages = ["Entiendo, tómate tu tiempo para decidir.", "Si necesitas ajustar algo, avísame. Qué te gustaría hacer?"]
+    elif intention == "confirm_deposit":
+        if "ya envié" in incoming_msg.lower() or "depositado" in incoming_msg.lower():
+            messages = [
+                "Gracias por tu compra! Confirmaré la recepción del depósito y seguiremos con el proceso.",
+                "Estamos en contacto para los próximos pasos."
+            ]
+            conversation_state[phone]['stage'] = "deposit_confirmed"
+        else:
+            messages = ["Entiendo, cuando hagas el depósito, por favor avísame para confirmar.", "Alguna duda que pueda ayudarte a resolver?"]
+    elif intention == "external_question":
+        question = incoming_msg
+        prompt = (
+            f"Eres Giselle, una asesora de ventas de FAV Living. "
+            f"El cliente ha hecho una pregunta externa al proyecto {mentioned_project}, pero que puede ayudar a cerrar la venta: '{question}'. "
+            f"Datos del proyecto: {project_data}\n"
+            f"Tu tarea es razonar una respuesta positiva que apoye la venta, basándote en el contexto del proyecto y datos generales, sin mentir ni inventar información específica del proyecto. "
+            f"Por ejemplo, si preguntan 'a cuánto está un supermercado cerca de Calidris?', puedes razonar que Calidris está en una zona bien ubicada y que probablemente haya supermercados a 5-10 minutos, ya que es común en zonas residenciales. "
+            f"Si preguntan 'cómo está el mercado de rentas en Pesquería?', puedes razonar que Pesquería es una zona en crecimiento con alta demanda, lo que hace que las rentas sean una buena inversión. "
+            f"Si preguntan 'cómo está la ocupación en Holbox?', puedes razonar que Holbox es un destino turístico popular con alta ocupación, especialmente en temporada alta, lo que beneficia a proyectos como condohoteles. "
+            f"Responde de forma breve y profesional, enfocándote en apoyar la venta.\n\n"
+            f"Mensaje del cliente: {incoming_msg}"
+        )
+
+        try:
+            response = openai_client.chat.completions.create(
+                model=bot_config.CHATGPT_MODEL,
+                messages=[
+                    {"role": "system", "content": prompt},
+                    {"role": "user", "content": incoming_msg}
+                ],
+                max_tokens=150,
+                temperature=0.7
+            )
+            reply = response.choices[0].message.content.strip()
+            logger.debug(f"Generated external question response from OpenAI: {reply}")
+
+            current_message = ""
+            sentences = reply.split('. ')
+            for sentence in sentences:
+                if not sentence:
+                    continue
+                sentence = sentence.strip()
+                if sentence:
+                    if len(current_message.split('\n')) < 2 and len(current_message) < 100:
+                        current_message += (sentence + '. ') if current_message else sentence + '. '
+                    else:
+                        messages.append(current_message.strip())
+                        current_message = sentence + '. '
+            if current_message:
+                messages.append(current_message.strip())
+
+            if not messages:
+                messages = ["No tengo esa información a la mano, pero puedo revisarlo con el gerente, te parece?"]
+
+        except Exception as openai_e:
+            logger.error(f"Fallo con OpenAI API al responder pregunta externa: {str(openai_e)}", exc_info=True)
+            messages = ["No tengo esa información a la mano, pero puedo revisarlo con el gerente, te parece?"]
+    else:
+        # Default to processing the message as a question or unknown
+        prompt = (
+            f"{bot_config.BOT_PERSONALITY}\n\n"
+            f"Instrucciones para las respuestas:\n"
+            f"{bot_config.RESPONSE_INSTRUCTIONS}\n\n"
+            f"Información de los proyectos disponibles:\n"
+            f"{project_info}\n\n"
+            f"Datos específicos del proyecto {mentioned_project}:\n"
+            f"{project_data}\n\n"
+            f"Historial de conversación:\n"
+            f"{conversation_history}\n\n"
+            f"Mensaje del cliente: {incoming_msg}\n\n"
+            f"Responde de forma breve y profesional, enfocándote en la venta de propiedades. "
+            f"Interpreta la información del proyecto de manera natural para responder a las preguntas del cliente, "
+            f"como precios, URLs de archivos descargables, o cualquier otro detalle. "
+            f"Si el cliente pregunta por algo que no está en los datos del proyecto y es inherente al proyecto (como amenidades específicas), responde con una frase como "
+            f"'No tengo esa información a la mano, pero puedo revisarlo con el gerente, te parece?'"
+        )
+        logger.debug(f"Sending request to OpenAI for client message: '{incoming_msg}', project: {mentioned_project}")
+
+        try:
+            response = openai_client.chat.completions.create(
+                model=bot_config.CHATGPT_MODEL,
+                messages=[
+                    {"role": "system", "content": bot_config.BOT_PERSONALITY},
+                    {"role": "user", "content": prompt}
+                ],
+                max_tokens=150,
+                temperature=0.7
+            )
+            reply = response.choices[0].message.content.strip()
+            logger.debug(f"Generated response from OpenAI: {reply}")
+
+            if "no tengo esa información" in reply.lower() or "puedo revisarlo con el gerente" in reply.lower():
+                logger.info(f"Bot cannot answer: {incoming_msg}. Contacting gerente.")
+                messages.append("No tengo esa información a la mano, pero puedo revisarlo con el gerente, te parece?")
+                
+                project_context = f"sobre {mentioned_project}" if mentioned_project else "general"
+                gerente_message = f"Pregunta de {client_name} {project_context}: {incoming_msg}"
+                logger.debug(f"Preparing to send message to gerente: {gerente_message}")
+                logger.debug(f"Sending to gerente_phone: {gerente_phone} from {whatsapp_sender_number}")
+
+                try:
+                    if twilio_client is None:
+                        raise Exception("Twilio client not initialized.")
+
+                    logger.debug(f"Checking WhatsApp window for {gerente_phone}")
+                    window_active = check_whatsapp_window(gerente_phone)
+                    logger.debug(f"WhatsApp window active: {window_active}")
+
+                    message = twilio_client.messages.create(
+                        from_=whatsapp_sender_number,
+                        body=gerente_message,
+                        to=gerente_phone
+                    )
+                    logger.info(f"Sent message to gerente: SID {message.sid}, Estado: {message.status}")
+
+                    updated_message = twilio_client.messages(message.sid).fetch()
+                    logger.info(f"Estado del mensaje actualizado: {updated_message.status}")
+                    if updated_message.status == "failed":
+                        logger.error(f"Error al enviar mensaje al gerente: {updated_message.error_code} - {updated_message.error_message}")
+                        messages = ["Lo siento, hubo un problema al contactar al gerente. En que mas puedo ayudarte?"]
+                except Exception as twilio_e:
+                    logger.error(f"Error sending message to gerente via Twilio: {str(twilio_e)}", exc_info=True)
+                    messages = ["Lo siento, hubo un problema al contactar al gerente. En que mas puedo ayudarte?"]
+            else:
+                current_message = ""
+                sentences = reply.split('. ')
+                for sentence in sentences:
+                    if not sentence:
+                        continue
+                    sentence = sentence.strip()
+                    if sentence:
+                        if len(current_message.split('\n')) < 2 and len(current_message) < 100:
+                            current_message += (sentence + '. ') if current_message else sentence + '. '
+                        else:
+                            messages.append(current_message.strip())
+                            current_message = sentence + '. '
+                if current_message:
+                    messages.append(current_message.strip())
+
+                if not messages:
+                    messages = ["No tengo esa información a la mano, pero puedo revisarlo con el gerente, te parece?"]
+
+        except Exception as openai_e:
+            logger.error(f"Fallo con OpenAI API: {str(openai_e)}", exc_info=True)
+            messages = ["Lo siento, no entiendo bien tu pregunta."]
+
+    logger.debug(f"Final messages: {messages}")
+    return messages, mentioned_project
+
+def handle_audio_message(media_url, phone, twilio_account_sid, twilio_auth_token):
+    logger.debug("Handling audio message")
+    audio_response = requests.get(media_url, auth=(twilio_account_sid, twilio_auth_token))
+    if audio_response.status_code != 200:
+        logger.error(f"Failed to download audio: {audio_response.status_code}")
+        return ["Lo siento, no pude procesar tu mensaje de audio. Podrias enviarlo como texto?"], None
+
+    audio_file_path = f"/tmp/audio_{phone.replace(':', '_')}.ogg"
+    with open(audio_file_path, 'wb') as f:
+        f.write(audio_response.content)
+    logger.debug(f"Audio saved to {audio_file_path}")
+
+    try:
+        with open(audio_file_path, 'rb') as audio_file:
+            transcription = openai_client.audio.transcriptions.create(
+                model="whisper-1",
+                file=audio_file,
+                language="es"
+            )
+        incoming_msg = transcription.text.strip()
+        logger.info(f"Audio transcribed: {incoming_msg}")
+        return None, incoming_msg
+    except Exception as e:
+        logger.error(f"Error transcribing audio: {str(e)}\n{traceback.format_exc()}")
+        return ["Lo siento, no pude entender tu mensaje de audio. Podrias intentarlo de nuevo o escribirlo como texto?", f"Error details for debugging: {str(e)}"], None
+    finally:
+        if os.path.exists(audio_file_path):
+            os.remove(audio_file_path)
