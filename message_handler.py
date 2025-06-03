@@ -205,164 +205,16 @@ def process_message(incoming_msg, phone, conversation_state, project_info, conve
     intention = intention_result.get("intention", "unknown")
     intention_data = intention_result.get("data", {})
 
-    # Handle based on intention using AI for more natural responses
-    if intention == "greeting":
-        # This should be handled in app.py, but we'll include a fallback
-        messages = [f"Hola, soy Giselle de FAV Living, una desarrolladora inmobiliaria. Me encantaría conocerte, ¿cómo te llamas?"]
-        conversation_state[phone]['name_asked'] = conversation_state[phone].get('name_asked', 0) + 1
-    elif intention == "budget":
-        budget = intention_data.get("budget", "No especificado")
-        conversation_state[phone]['client_budget'] = budget
-        if budget.lower() != "no especificado":
-            messages = [f"Gracias por compartir tu presupuesto, {client_name}. Me gustaría saber un poco más sobre lo que buscas en un proyecto, ¿qué tienes en mente?"]
-            conversation_state[phone]['needs_asked'] = True
-        else:
-            messages = [f"No te preocupes, {client_name}, podemos explorar opciones sin un presupuesto definido. ¿Qué tipo de proyecto te interesa? ¿Algo para invertir, vivir, o tal vez vacacionar?"]
-            conversation_state[phone]['needs_asked'] = True
-    elif intention == "needs":
-        needs = intention_data.get("needs", "No especificadas")
-        conversation_state[phone]['needs'] = needs
-        # Instead of asking rigid follow-up questions, provide project info
-        project_match = None
-        for project, data in projects_data.items():
-            description = data.get('description', '').lower()
-            if needs.lower() != "no especificadas":
-                if "departamentos" in needs.lower() and "condohotel" in description:
-                    project_match = project
-                    break
-        if not project_match:
-            project_match = mentioned_project if mentioned_project else list(projects_data.keys())[0]
-
-        project_data_dict = projects_data.get(project_match, {})
-        project_description = project_data_dict.get('description', "Información no disponible para este proyecto.")
-        project_type = project_data_dict.get('type', 'No especificado')
-        project_location = project_data_dict.get('location', 'No especificada')
-        messages = [
-            f"Entiendo, {client_name}. Basado en lo que buscas, te podría interesar un proyecto como {project_match}.",
-            f"Está ubicado en {project_location}, es un {project_type} con detalles como: {project_description}",
-            f"¿Te gustaría saber más sobre este proyecto o prefieres explorar otras opciones?"
-        ]
-        conversation_state[phone]['offered_project'] = project_match
-        conversation_state[phone]['stage'] = "project_info"
-    elif intention == "purchase_intent":
-        purchase_intent = intention_data.get("purchase_intent", "No especificado")
-        conversation_state[phone]['purchase_intent'] = purchase_intent
-        messages = [f"Gracias por compartir tu plazo de compra, {client_name}. ¿Qué tipo de proyecto estás buscando? ¿Algo para invertir, para vivir, o tal vez para vacacionar?"]
-        conversation_state[phone]['needs_asked'] = True
-    elif intention == "contact_preference":
-        days = intention_data.get("days", None)
-        time = intention_data.get("time", None)
-        if days:
-            conversation_state[phone]['preferred_days'] = days
-        if time:
-            conversation_state[phone]['preferred_time'] = time
-        messages = [f"Perfecto, {client_name}, me aseguraré de contactarte en el horario que prefieres. Mientras tanto, ¿te gustaría saber más sobre alguno de nuestros proyectos?"]
-    elif intention == "no_interest":
+    # Handle critical intents with minimal predefined logic
+    if intention == "no_interest":
         conversation_state[phone]['no_interest'] = True
         messages = bot_config.handle_no_interest_response()
-    elif intention == "offer_response" or (conversation_state[phone].get('stage') == "project_info" and ("sí" in incoming_msg.lower() or "si" in incoming_msg.lower() or "interesa" in incoming_msg.lower())):
-        if conversation_state[phone].get('stage') == "project_info":
-            response = "yes"
-        else:
-            response = intention_data.get("response", "").lower()
-        offered_project = conversation_state[phone].get('offered_project', mentioned_project)
-        if "sí" in response or "si" in response or "interesa" in response:
-            # Only offer after providing more info and ensuring interest
-            project_data_dict = projects_data.get(offered_project, {})
-            project_description = project_data_dict.get('description', "Información no disponible para este proyecto.")
-            messages = [
-                f"¡Qué bueno que te interesa, {client_name}! En {offered_project}, tenemos unidades disponibles que podrían ser perfectas para ti.",
-                f"Por ejemplo, una unidad de 2 recámaras tiene un precio inicial de $375,000 USD, con un enganche del 20% y pagos a 12 meses.",
-                f"¿Te gustaría que te prepare una oferta personalizada o prefieres saber más detalles primero?"
-            ]
-            conversation_state[phone]['stage'] = "offer_made"
-        else:
-            # Move to negotiation stage
-            messages = [
-                f"Entiendo, {client_name}. {offered_project} es una gran opción por su alta plusvalía y ubicación estratégica.",
-                f"Si tienes alguna duda o prefieres explorar otro proyecto, estoy aquí para ayudarte. ¿Qué te gustaría hacer?"
-            ]
-            conversation_state[phone]['stage'] = "negotiation"
-    elif intention == "negotiation":
-        offered_project = conversation_state[phone].get('offered_project', mentioned_project)
-        if "zoom" in incoming_msg.lower() or "sí" in incoming_msg.lower() or "si" in incoming_msg.lower():
-            messages = [f"Perfecto, {client_name}. Agendaré un Zoom con el gerente para que podamos resolver todas tus dudas. ¿En qué horario te vendría bien?"]
-            conversation_state[phone]['stage'] = "scheduling_zoom"
-        elif "no" in incoming_msg.lower():
-            # Offer an alternative project
-            alternative_project = None
-            for project in projects_data.keys():
-                if project != offered_project:
-                    alternative_project = project
-                    break
-            if alternative_project:
-                conversation_state[phone]['offered_project'] = alternative_project
-                project_data_dict = projects_data.get(alternative_project, {})
-                project_description = project_data_dict.get('description', "Información no disponible para este proyecto.")
-                project_type = project_data_dict.get('type', 'No especificado')
-                project_location = project_data_dict.get('location', 'No especificada')
-                messages = [
-                    f"Entiendo, {client_name}. Si {offered_project} no es lo que buscas, te podría interesar {alternative_project}.",
-                    f"Está ubicado en {project_location}, es un {project_type} con detalles como: {project_description}",
-                    f"¿Te gustaría saber más sobre este proyecto?"
-                ]
-                conversation_state[phone]['stage'] = "project_info"
-            else:
-                messages = [
-                    f"Entiendo, {client_name}. Tómate tu tiempo para pensar en {offered_project}.",
-                    f"Si cambias de idea o quieres explorar otras opciones, aquí estoy para ayudarte. ¿Qué te gustaría hacer?"
-                ]
-        else:
-            # Continue negotiation with AI-generated response
-            prompt = (
-                f"Eres Giselle, una asesora de ventas de FAV Living. "
-                f"El cliente tiene dudas o no aceptó la oferta inicial para el proyecto {offered_project}. "
-                f"Datos del proyecto: {project_data}\n"
-                f"Tu tarea es negociar destacando atributos financieros (retorno de inversión, plusvalía) y del proyecto (ubicación, amenidades). "
-                f"Responde de forma breve, natural y profesional, enfocándote en mantener el interés del cliente sin presionarlo.\n\n"
-                f"Historial de conversación:\n{conversation_history}\n\n"
-                f"Mensaje del cliente: {incoming_msg}"
-            )
-            try:
-                response = openai_client.chat.completions.create(
-                    model=bot_config.CHATGPT_MODEL,
-                    messages=[
-                        {"role": "system", "content": prompt},
-                        {"role": "user", "content": incoming_msg}
-                    ],
-                    max_tokens=150,
-                    temperature=0.7
-                )
-                reply = response.choices[0].message.content.strip()
-                logger.debug(f"Generated negotiation response from OpenAI: {reply}")
-
-                current_message = ""
-                sentences = reply.split('. ')
-                for sentence in sentences:
-                    if not sentence:
-                        continue
-                    sentence = sentence.strip()
-                    if sentence:
-                        if len(current_message.split('\n')) < 2 and len(current_message) < 100:
-                            current_message += (sentence + '. ') if current_message else sentence + '. '
-                        else:
-                            messages.append(current_message.strip())
-                            current_message = sentence + '. '
-                if current_message:
-                    messages.append(current_message.strip())
-
-                if not messages:
-                    messages = [f"Entiendo, {client_name}. ¿Te gustaría que agendemos un Zoom con el gerente para resolver tus dudas?"]
-            except Exception as openai_e:
-                logger.error(f"Fallo con OpenAI API en negociación: {str(openai_e)}", exc_info=True)
-                messages = [f"Entiendo, {client_name}. ¿Te gustaría que agendemos un Zoom con el gerente para resolver tus dudas?"]
     elif intention == "confirm_sale":
         if "sí" in incoming_msg.lower() or "si" in incoming_msg.lower() or "confirmo" in incoming_msg.lower():
             messages = [
                 f"¡Felicidades por tu decisión, {client_name}! La unidad 2B de MUWAN está apartada para ti.",
                 "Te enviaré los datos bancarios para el depósito de $10,000 USD. Confirmaré la recepción del depósito para seguir con el proceso."
             ]
-            conversation_state[phone]['stage'] = "sale_closed"
         else:
             messages = [f"Entiendo, {client_name}. Tómate tu tiempo para decidir. Si necesitas más información o ajustar algo, aquí estoy para ayudarte."]
     elif intention == "confirm_deposit":
@@ -371,65 +223,24 @@ def process_message(incoming_msg, phone, conversation_state, project_info, conve
                 f"¡Gracias por tu compra, {client_name}! Confirmaré la recepción del depósito y seguiremos con el proceso.",
                 "Estaremos en contacto para los próximos pasos."
             ]
-            conversation_state[phone]['stage'] = "deposit_confirmed"
         else:
             messages = [f"Entendido, {client_name}. Cuando hagas el depósito, por favor avísame para confirmar. ¿Tienes alguna duda que pueda ayudarte a resolver?"]
-    elif intention == "external_question":
-        question = incoming_msg
-        prompt = (
-            f"Eres Giselle, una asesora de ventas de FAV Living. "
-            f"El cliente ha hecho una pregunta externa al proyecto {mentioned_project}, pero que puede ayudar a cerrar la venta: '{question}'. "
-            f"Datos del proyecto: {project_data}\n"
-            f"Tu tarea es razonar una respuesta positiva que apoye la venta, basándote en el contexto del proyecto y datos generales, sin mentir ni inventar información específica del proyecto. "
-            f"Por ejemplo, si preguntan 'a cuánto está un supermercado cerca de Calidris?', puedes razonar que Calidris está en una zona bien ubicada y que probablemente haya supermercados a 5-10 minutos, ya que es común en zonas residenciales. "
-            f"Si preguntan 'cómo está el mercado de rentas en Pesquería?', puedes razonar que Pesquería es una zona en crecimiento con alta demanda, lo que hace que las rentas sean una buena inversión. "
-            f"Si preguntan 'cómo está la ocupación en Holbox?', puedes razonar que Holbox es un destino turístico popular con alta ocupación, especialmente en temporada alta, lo que beneficia a proyectos como condohoteles. "
-            f"Responde de forma breve, natural y profesional, enfocándote en apoyar la venta.\n\n"
-            f"Mensaje del cliente: {incoming_msg}"
-        )
-
-        try:
-            response = openai_client.chat.completions.create(
-                model=bot_config.CHATGPT_MODEL,
-                messages=[
-                    {"role": "system", "content": prompt},
-                    {"role": "user", "content": incoming_msg}
-                ],
-                max_tokens=150,
-                temperature=0.7
-            )
-            reply = response.choices[0].message.content.strip()
-            logger.debug(f"Generated external question response from OpenAI: {reply}")
-
-            current_message = ""
-            sentences = reply.split('. ')
-            for sentence in sentences:
-                if not sentence:
-                    continue
-                sentence = sentence.strip()
-                if sentence:
-                    if len(current_message.split('\n')) < 2 and len(current_message) < 100:
-                        current_message += (sentence + '. ') if current_message else sentence + '. '
-                    else:
-                        messages.append(current_message.strip())
-                        current_message = sentence + '. '
-            if current_message:
-                messages.append(current_message.strip())
-
-            if not messages:
-                messages = [f"No tengo esa información a la mano, {client_name}, pero puedo revisarlo con el gerente si te parece."]
-        except Exception as openai_e:
-            logger.error(f"Fallo con OpenAI API al responder pregunta externa: {str(openai_e)}", exc_info=True)
-            messages = [f"No tengo esa información a la mano, {client_name}, pero puedo revisarlo con el gerente si te parece."]
     else:
-        # Default to a conversational response using AI
+        # Use AI to generate a natural response for all other intents
+        client_budget = conversation_state[phone].get('client_budget', 'No especificado')
+        client_needs = conversation_state[phone].get('needs', 'No especificadas')
+        client_purchase_intent = conversation_state[phone].get('purchase_intent', 'No especificado')
         prompt = (
             f"{bot_config.BOT_PERSONALITY}\n\n"
             f"Instrucciones para las respuestas:\n"
-            f"Actúa como una asesora de ventas profesional y amigable de FAV Living. Tu objetivo principal es informar al cliente sobre los proyectos, generar interés y resolver dudas de manera natural, sin apresurarte a hacer una oferta a menos que el cliente muestre un interés claro en avanzar con una compra. "
+            f"Actúa como una asesora de ventas profesional, amigable y cálida de FAV Living. Tu objetivo principal es informar al cliente sobre los proyectos, generar interés y resolver dudas de manera natural, sin apresurarte a hacer una oferta a menos que el cliente muestre un interés claro en avanzar con una compra. "
             f"Prioriza entregar información detallada y útil sobre los proyectos, invítalo a explorar más detalles o a aclarar dudas antes de sugerir una oferta. "
             f"Evita hacer preguntas rígidas o seguir un flujo predeterminado; en lugar de eso, adapta tus respuestas al contexto del mensaje del cliente para que la conversación sea fluida y amigable. "
-            f"Usa un tono cálido y profesional, y siempre dirígete al cliente por su nombre cuando sea posible.\n\n"
+            f"Usa un tono cálido y profesional, y siempre dirígete al cliente por su nombre ({client_name}) cuando sea posible.\n\n"
+            f"Información del cliente:\n"
+            f"Presupuesto: {client_budget}\n"
+            f"Necesidades: {client_needs}\n"
+            f"Intención de compra: {client_purchase_intent}\n\n"
             f"Información de los proyectos disponibles:\n"
             f"{project_info}\n\n"
             f"Datos específicos del proyecto {mentioned_project}:\n"
@@ -506,6 +317,9 @@ def process_message(incoming_msg, phone, conversation_state, project_info, conve
 
                 if not messages:
                     messages = [f"No tengo esa información a la mano, {client_name}, pero puedo revisarlo con el gerente si te parece."]
+        except Exception as openai_e:
+            logger.error(f"Fallo con OpenAI API: {str(openai_e)}", exc_info=True)
+            messages = [f"No tengo esa información a la mano, {client_name}, pero puedo revisarlo con el gerente si te parece."]
 
     logger.debug(f"Final messages: {messages}")
     return messages, mentioned_project  # Ensure we always return a tuple
