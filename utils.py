@@ -1,6 +1,7 @@
 import os
 import logging
 import json
+import re
 from google.cloud import storage
 from datetime import datetime, timedelta
 
@@ -140,6 +141,7 @@ def save_client_info(phone, conversation_state, gcs_bucket_name, gcs_conversatio
         budget = client_info.get('client_budget', 'No proporcionado')
         preferred_days = client_info.get('preferred_days', 'No proporcionado')
         preferred_time = client_info.get('preferred_time', 'No proporcionado')
+        priority = client_info.get('priority', False)
         
         with open(local_file_path, 'w', encoding='utf-8') as f:
             f.write(f"Información del Cliente: {phone}\n")
@@ -147,31 +149,44 @@ def save_client_info(phone, conversation_state, gcs_bucket_name, gcs_conversatio
             f.write(f"Presupuesto: {budget}\n")
             f.write(f"Días Preferidos: {preferred_days}\n")
             f.write(f"Horario Preferido: {preferred_time}\n")
+            f.write(f"Prioritario: {'Sí' if priority else 'No'}\n")
         upload_to_gcs(gcs_bucket_name, local_file_path, destination_blob_name)
         logger.info(f"Saved client info for {phone} to GCS")
     except Exception as e:
         logger.error(f"Error saving client info for {phone}: {str(e)}")
 
 def generate_interested_report(conversation_state):
-    """Generate a report of interested clients, their projects, and statuses."""
+    """Generate a detailed report of interested clients."""
     logger.debug("Generating interested report")
     report = []
     interested_count = 0
     project_counts = {}
     status_counts = {'Interesado': 0, 'Esperando Respuesta': 0, 'No Interesado': 0}
+    priority_clients = []
+    non_priority_clients = {}
+    
+    # Initialize project groups
+    project_groups = {}
 
-    # Iterate through all clients in conversation_state
+    # Process each client in the conversation state
     for phone, state in conversation_state.items():
         # Skip the gerente
         if state.get('is_gerente', False):
             continue
 
         # Increment total interested count (excluding gerente)
+        if state.get('no_interest', False):
+            status_counts['No Interesado'] += 1
+            continue
         interested_count += 1
 
         # Determine the project of interest
         project = state.get('last_mentioned_project', 'Desconocido')
         project_counts[project] = project_counts.get(project, 0) + 1
+
+        # Initialize project group if not exists
+        if project not in project_groups:
+            project_groups[project] = []
 
         # Determine the client's status
         if state.get('pending_question'):
@@ -182,17 +197,93 @@ def generate_interested_report(conversation_state):
             status = 'Interesado'
         status_counts[status] += 1
 
+        # Gather client details
+        client_name = state.get('client_name', 'Desconocido')
+        client_budget = state.get('client_budget', 'No especificado')
+        last_message = state['history'][-1] if state['history'] else 'Sin mensajes'
+        last_contact = state.get('last_contact', datetime.now().isoformat())
+        last_contact_dt = datetime.fromisoformat(last_contact)
+        time_since_contact = (datetime.now() - last_contact_dt).days
+        messages_count = sum(1 for msg in state['history'] if msg.startswith("Cliente:"))
+
+        client_info = (
+            f"- {client_name} ({phone}):\n"
+            f"  Estado: {status}\n"
+            f"  Presupuesto: {client_budget}\n"
+            f"  Último mensaje: {last_message}\n"
+            f"  Mensajes recibidos: {messages_count}\n"
+            f"  Último contacto: Hace {time_since_contact} día(s)"
+        )
+        if state.get('priority', False):
+            priority_clients.append(client_info)
+        else:
+            project_groups[project].append(client_info)
+
     # Build the report
-    report.append(f"Reporte de Interesados:")
+    report.append("Reporte de Interesados:")
     report.append(f"Total de interesados: {interested_count}")
-    report.append("Proyectos de interés:")
-    for project, count in project_counts.items():
-        report.append(f"- {project}: {count} interesados")
-    report.append("Estados:")
+
+    # Add project breakdown
+    report.append("Por Proyecto:")
+    for project, clients in project_groups.items():
+        report.append(f"- {project}:")
+        if clients:
+            report.extend(clients)
+        else:
+            report.append("  No hay clientes interesados.")
+
+    # Add priority clients section
+    if priority_clients:
+        report.append("Clientes Prioritarios:")
+        report.extend(priority_clients)
+
+    # Add status summary
+    report.append("Resumen de Estados:")
     for status, count in status_counts.items():
         report.append(f"- {status}: {count} clientes")
 
     return report
+
+def generate_daily_summary(conversation_state):
+    """Generate a daily summary of activity."""
+    logger.debug("Generating daily activity summary")
+    summary = []
+    today = datetime.now().date()
+    new_clients = 0
+    questions_escalated = 0
+    responses_sent = 0
+    disinterested_clients = 0
+
+    for phone, state in conversation_state.items():
+        if state.get('is_gerente', False):
+            continue
+
+        # Check for new clients (first contact today)
+        last_contact = state.get('last_contact', datetime.now().isoformat())
+        last_contact_dt = datetime.fromisoformat(last_contact).date()
+        if last_contact_dt == today:
+            new_clients += 1
+
+        # Check for questions escalated today
+        history = state.get('history', [])
+        for msg in history:
+            if msg.startswith("Giselle: Permíteme, déjame revisar esto con el gerente.") and last_contact_dt == today:
+                questions_escalated += 1
+            elif msg.startswith("Giselle: Gracias por esperar. Sobre tu pregunta:") and last_contact_dt == today:
+                responses_sent += 1
+
+        # Check for disinterested clients
+        if state.get('no_interest', False) and last_contact_dt == today:
+            disinterested_clients += 1
+
+    summary.append("Resumen Diario de Actividad:")
+    summary.append(f"Fecha: {today.strftime('%Y-%m-%d')}")
+    summary.append(f"Nuevos clientes: {new_clients}")
+    summary.append(f"Preguntas escaladas al gerente: {questions_escalated}")
+    summary.append(f"Respuestas enviadas a clientes: {responses_sent}")
+    summary.append(f"Clientes desinteresados: {disinterested_clients}")
+
+    return summary
 
 def download_projects_from_storage(bucket_name, base_path):
     """Download project files from Google Cloud Storage."""
@@ -256,40 +347,7 @@ def load_gerente_respuestas(base_path):
 
 def save_gerente_respuesta(base_path, question, answer, gcs_bucket_name, project=None):
     """Save a new gerente response to the appropriate FAQ file and upload to GCS."""
-    filename = get_faq_filename(project)
-    project_dir = os.path.join(base_path, project.lower() if project else "")
-    file_path = os.path.join(project_dir, filename)
-    destination_blob_name = os.path.join(base_path, project.lower() if project else "", filename)
-
-    try:
-        # Ensure the directory exists
-        if not os.path.exists(project_dir):
-            os.makedirs(project_dir)
-            logger.info(f"Created directory {project_dir} for FAQ file")
-
-        # Ensure the file exists
-        if not os.path.exists(file_path):
-            with open(file_path, 'w', encoding='utf-8') as f:
-                pass  # Create an empty file
-            logger.info(f"Created FAQ file {file_path}")
-
-        # Append the new question and answer
-        with open(file_path, 'a', encoding='utf-8') as f:
-            f.write(f"Pregunta: {question}\n")
-            f.write(f"Respuesta: {answer}\n\n")
-        logger.info(f"Saved gerente response to {file_path}")
-
-        # Upload the updated file to GCS
-        upload_to_gcs(gcs_bucket_name, file_path, destination_blob_name)
-
-        # Update the in-memory faq_data
-        project_key = project.lower() if project else "general"
-        if project_key not in faq_data:
-            faq_data[project_key] = {}
-        faq_data[project_key][question.lower()] = answer
-        logger.debug(f"Updated faq_data[{project_key}]")
-    except Exception as e:
-        logger.error(f"Error saving gerente response to FAQ: {str(e)}", exc_info=True)
+    logger.info("Gerente response saving handled in app.py")
 
 def load_faq_files(base_path):
     """Load all FAQ files into faq_data at startup."""
@@ -377,7 +435,7 @@ def load_projects_from_folder(base_path):
     for project in projects:
         downloadable_links[project] = {}
         downloadable_urls[project] = {}
-        projects_data[project] = ""
+        projects_data[project] = {}
 
     for project in projects:
         project_path = os.path.join(base_path, project)
@@ -389,7 +447,11 @@ def load_projects_from_folder(base_path):
             logger.info(f"Procesando archivo de texto para {project}: {file_path}")
             text = extract_text_from_txt(file_path)
             if text:
-                projects_data[project] = text
+                projects_data[project] = {
+                    'description': text,
+                    'type': 'condohotel' if 'condohotel' in text.lower() else 'desconocido',
+                    'location': project_path.split('/')[-1]  # Simplified assumption
+                }
                 logger.info(f"Proyecto {project} procesado correctamente desde {file_path}.")
                 file_count += 1
                 logger.debug(f"Raw content of {project_file} loaded")
