@@ -84,3 +84,6 @@ def handle_recontact(phone, state, current_time):
 # Gerente Configuration
 GERENTE_PHONE = "whatsapp:+528110665094"
 GERENTE_ROLE = "gerente"
+
+# FAQ Response Prefix
+FAQ_RESPONSE_PREFIX = "respuestafaq:"
