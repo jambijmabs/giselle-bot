@@ -423,7 +423,6 @@ def process_message(incoming_msg, phone, conversation_state, project_info, conve
 
                 if not messages:
                     messages = ["Entiendo, si tienes dudas, puedo agendar un Zoom con el gerente, te parece?"]
-
             except Exception as openai_e:
                 logger.error(f"Fallo con OpenAI API en negociación: {str(openai_e)}", exc_info=True)
                 messages = ["Entiendo, si tienes dudas, puedo agendar un Zoom con el gerente, te parece?"]
@@ -489,7 +488,6 @@ def process_message(incoming_msg, phone, conversation_state, project_info, conve
 
             if not messages:
                 messages = ["No tengo esa información a la mano, pero puedo revisarlo con el gerente, te parece?"]
-
         except Exception as openai_e:
             logger.error(f"Fallo con OpenAI API al responder pregunta externa: {str(openai_e)}", exc_info=True)
             messages = ["No tengo esa información a la mano, pero puedo revisarlo con el gerente, te parece?"]
@@ -577,6 +575,9 @@ def process_message(incoming_msg, phone, conversation_state, project_info, conve
 
                 if not messages:
                     messages = ["No tengo esa información a la mano, pero puedo revisarlo con el gerente, te parece?"]
+        except Exception as openai_e:
+            logger.error(f"Fallo con OpenAI API: {str(openai_e)}", exc_info=True)
+            messages = ["No tengo esa información a la mano, pero puedo revisarlo con el gerente, te parece?"]
 
     logger.debug(f"Final messages: {messages}")
     return messages, mentioned_project  # Ensure we always return a tuple
