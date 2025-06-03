@@ -9,7 +9,7 @@ import os
 import utils
 from twilio.rest import Client
 from datetime import datetime, timedelta
-import twilio  # Importar twilio para verificar la versión
+import twilio
 
 # Configure logger
 logger = logging.getLogger(__name__)
@@ -38,7 +38,6 @@ def initialize_message_handler(openai_api_key, projects_data_ref, downloadable_u
         twilio_client = None
 
 def check_whatsapp_window(phone):
-    """Check if the WhatsApp 24-hour messaging window is active for the given phone."""
     if twilio_client is None:
         logger.error("Twilio client not initialized, cannot check WhatsApp window.")
         return False
@@ -89,8 +88,8 @@ def detect_intention(incoming_msg, conversation_history, is_gerente=False):
     prompt = (
         f"Eres un asistente que identifica la intención detrás de un mensaje de un {role}. "
         f"Tu tarea es clasificar la intención del mensaje en una de las siguientes categorías y extraer información relevante:\n"
-        f"- Para gerente: report (solicitar reporte), client_search (buscar cliente), add_faq (añadir FAQ), priority (marcar prioritario), task (asignar tarea), daily_summary (resumen diario), response (responder a cliente), unknown (desconocido).\n"
-        f"- Para cliente: question (pregunta sobre proyecto), external_question (pregunta externa al proyecto), greeting (saludo), budget (informar presupuesto), contact_preference (preferencia de contacto), no_interest (desinterés), unknown (desconocido).\n"
+        f"- Para gerente: report (solicitar reporte), client_search (buscar cliente), add_faq (añadir FAQ), priority (marcar prioritario), task (asignar tarea), daily_summary (resumen diario), response (responder a cliente), schedule_zoom (programar Zoom), unknown (desconocido).\n"
+        f"- Para cliente: question (pregunta sobre proyecto), external_question (pregunta externa al proyecto), greeting (saludo), budget (informar presupuesto), needs (informar necesidades), offer_response (respuesta a oferta), contact_preference (preferencia de contacto), no_interest (desinterés), negotiation (negociar oferta), confirm_sale (confirmar venta), unknown (desconocido).\n"
         f"Devuelve la intención y los datos relevantes (e.g., proyecto, número de teléfono, pregunta, respuesta) en formato JSON.\n\n"
         f"Historial de conversación:\n{conversation_history}\n\n"
         f"Mensaje: {incoming_msg}"
@@ -177,10 +176,85 @@ def process_message(incoming_msg, phone, conversation_state, project_info, conve
     # Handle based on intention
     if intention == "greeting":
         messages = ["Hola, cual es tu nombre?"]
+        conversation_state[phone]['name_asked'] = 1
     elif intention == "budget":
         budget = intention_data.get("budget", "No especificado")
         conversation_state[phone]['client_budget'] = budget
-        messages = ["Entendido, gracias por compartir tu presupuesto.", "Tenemos opciones que te pueden interesar, de que proyecto te gustaría saber?"]
+        if not conversation_state[phone].get('needs_asked'):
+            messages = ["Entendido, gracias por compartir tu presupuesto.", "Qué estás buscando en un proyecto?"]
+            conversation_state[phone]['needs_asked'] = True
+        else:
+            # Proceed to offer a project if needs are already known
+            client_budget = conversation_state[phone].get('client_budget', 'No especificado')
+            client_needs = conversation_state[phone].get('needs', 'No especificadas')
+            project_match = None
+            for project, data in projects_data.items():
+                # Simplified matching logic: select a project that fits the budget and needs
+                description = data.get('description', '').lower()
+                if client_budget.lower() != "no especificado":
+                    # Extract price range from description (simplified example)
+                    price_match = re.search(r'(\$\d{1,3}(,\d{3})*(?:\.\d+)?\s*(?:USD|MXN)?)', description)
+                    if price_match:
+                        price = price_match.group(0).replace('$', '').replace(',', '').replace(' USD', '').replace(' MXN', '')
+                        try:
+                            price_value = float(price)
+                            budget_value = float(re.search(r'\d+', client_budget).group(0)) * 1000000 if "millones" in client_budget.lower() else float(re.search(r'\d+', client_budget).group(0))
+                            if price_value <= budget_value:
+                                project_match = project
+                                break
+                        except ValueError:
+                            continue
+                if not project_match and client_needs.lower() != "no especificadas":
+                    if "departamentos" in client_needs.lower() and "condohotel" in description:
+                        project_match = project
+                        break
+            if not project_match:
+                project_match = mentioned_project if mentioned_project else list(projects_data.keys())[0]
+
+            conversation_state[phone]['offered_project'] = project_match
+            messages = [
+                f"Con tu presupuesto y necesidades, {project_match} podría interesarte.",
+                f"Por ejemplo, tenemos la unidad 2B a $375,000 USD, con un enganche del 20% y pagos a 12 meses. Te interesa?"
+            ]
+            conversation_state[phone]['stage'] = "offer_made"
+    elif intention == "needs":
+        needs = intention_data.get("needs", "No especificadas")
+        conversation_state[phone]['needs'] = needs
+        if not conversation_state[phone].get('budget_asked'):
+            messages = ["Gracias por compartir lo que buscas.", "Tienes un presupuesto en mente?"]
+            conversation_state[phone]['budget_asked'] = True
+        else:
+            # Proceed to offer a project if budget is already known
+            client_budget = conversation_state[phone].get('client_budget', 'No especificado')
+            client_needs = conversation_state[phone].get('needs', 'No especificadas')
+            project_match = None
+            for project, data in projects_data.items():
+                description = data.get('description', '').lower()
+                if client_budget.lower() != "no especificado":
+                    price_match = re.search(r'(\$\d{1,3}(,\d{3})*(?:\.\d+)?\s*(?:USD|MXN)?)', description)
+                    if price_match:
+                        price = price_match.group(0).replace('$', '').replace(',', '').replace(' USD', '').replace(' MXN', '')
+                        try:
+                            price_value = float(price)
+                            budget_value = float(re.search(r'\d+', client_budget).group(0)) * 1000000 if "millones" in client_budget.lower() else float(re.search(r'\d+', client_budget).group(0))
+                            if price_value <= budget_value:
+                                project_match = project
+                                break
+                        except ValueError:
+                            continue
+                if not project_match and client_needs.lower() != "no especificadas":
+                    if "departamentos" in client_needs.lower() and "condohotel" in description:
+                        project_match = project
+                        break
+            if not project_match:
+                project_match = mentioned_project if mentioned_project else list(projects_data.keys())[0]
+
+            conversation_state[phone]['offered_project'] = project_match
+            messages = [
+                f"Con tu presupuesto y necesidades, {project_match} podría interesarte.",
+                f"Por ejemplo, tenemos la unidad 2B a $375,000 USD, con un enganche del 20% y pagos a 12 meses. Te interesa?"
+            ]
+            conversation_state[phone]['stage'] = "offer_made"
     elif intention == "contact_preference":
         days = intention_data.get("days", None)
         time = intention_data.get("time", None)
@@ -192,8 +266,87 @@ def process_message(incoming_msg, phone, conversation_state, project_info, conve
     elif intention == "no_interest":
         conversation_state[phone]['no_interest'] = True
         messages = bot_config.handle_no_interest_response()
+    elif intention == "offer_response":
+        response = intention_data.get("response", "").lower()
+        offered_project = conversation_state[phone].get('offered_project', mentioned_project)
+        if "sí" in response or "si" in response or "interesa" in response:
+            messages = [
+                "Excelente, me alegra que te interese.",
+                "Para cerrar, confirmamos la unidad 2B a $375,000 USD, enganche del 20% y 12 meses. Necesitamos un depósito de $10,000 USD para apartarla. Confirmas?"
+            ]
+            conversation_state[phone]['stage'] = "closing_sale"
+        else:
+            # Move to negotiation stage
+            messages = [
+                f"Entiendo, {offered_project} tiene alta plusvalía y está en una ubicación atractiva, ideal para inversión.",
+                "Si tienes dudas, puedo agendar un Zoom con el gerente para ayudarte a decidir, te parece?"
+            ]
+            conversation_state[phone]['stage'] = "negotiation"
+    elif intention == "negotiation":
+        offered_project = conversation_state[phone].get('offered_project', mentioned_project)
+        if "zoom" in incoming_msg.lower() or "sí" in incoming_msg.lower() or "si" in incoming_msg.lower():
+            messages = ["Perfecto, agendaré un Zoom con el gerente. En que horario te vendría bien?"]
+            conversation_state[phone]['stage'] = "scheduling_zoom"
+        elif "no" in incoming_msg.lower():
+            messages = [
+                f"Entiendo, tómate tu tiempo para revisar la información de {offered_project}.",
+                "Si cambias de idea o quieres otra opción, avísame. Qué te gustaría hacer?"
+            ]
+        else:
+            # Continue negotiation
+            prompt = (
+                f"Eres Giselle, una asesora de ventas de FAV Living. "
+                f"El cliente tiene dudas o no aceptó la oferta inicial para el proyecto {offered_project}. "
+                f"Datos del proyecto: {project_data}\n"
+                f"Tu tarea es negociar destacando atributos financieros (retorno de inversión, plusvalía) y del proyecto (ubicación, amenidades). "
+                f"Responde de forma breve y profesional, enfocándote en cerrar la venta.\n\n"
+                f"Historial de conversación:\n{conversation_history}\n\n"
+                f"Mensaje del cliente: {incoming_msg}"
+            )
+            try:
+                response = openai_client.chat.completions.create(
+                    model=bot_config.CHATGPT_MODEL,
+                    messages=[
+                        {"role": "system", "content": prompt},
+                        {"role": "user", "content": incoming_msg}
+                    ],
+                    max_tokens=150,
+                    temperature=0.7
+                )
+                reply = response.choices[0].message.content.strip()
+                logger.debug(f"Generated negotiation response from OpenAI: {reply}")
+
+                current_message = ""
+                sentences = reply.split('. ')
+                for sentence in sentences:
+                    if not sentence:
+                        continue
+                    sentence = sentence.strip()
+                    if sentence:
+                        if len(current_message.split('\n')) < 2 and len(current_message) < 100:
+                            current_message += (sentence + '. ') if current_message else sentence + '. '
+                        else:
+                            messages.append(current_message.strip())
+                            current_message = sentence + '. '
+                if current_message:
+                    messages.append(current_message.strip())
+
+                if not messages:
+                    messages = ["Entiendo, si tienes dudas, puedo agendar un Zoom con el gerente, te parece?"]
+
+            except Exception as openai_e:
+                logger.error(f"Fallo con OpenAI API en negociación: {str(openai_e)}", exc_info=True)
+                messages = ["Entiendo, si tienes dudas, puedo agendar un Zoom con el gerente, te parece?"]
+    elif intention == "confirm_sale":
+        if "sí" in incoming_msg.lower() or "si" in incoming_msg.lower() or "confirmo" in incoming_msg.lower():
+            messages = [
+                "Felicidades por tu decisión! La unidad 2B de MUWAN está apartada para ti.",
+                "Te enviaré los datos para el depósito de $10,000 USD. Estamos en contacto para el siguiente paso."
+            ]
+            conversation_state[phone]['stage'] = "sale_closed"
+        else:
+            messages = ["Entiendo, tómate tu tiempo para decidir.", "Si necesitas ajustar algo, avísame. Qué te gustaría hacer?"]
     elif intention == "external_question":
-        # Use AI to reason a positive answer that supports the sale
         question = incoming_msg
         prompt = (
             f"Eres Giselle, una asesora de ventas de FAV Living. "
