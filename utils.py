@@ -156,7 +156,7 @@ def save_client_info(phone, conversation_state, gcs_bucket_name, gcs_conversatio
         logger.error(f"Error saving client info for {phone}: {str(e)}")
 
 def generate_interested_report(conversation_state):
-    """Generate a detailed report of interested clients."""
+    """Generate a detailed report of interested clients with emojis for friendliness."""
     logger.debug("Generating interested report")
     report = []
     interested_count = 0
@@ -206,13 +206,28 @@ def generate_interested_report(conversation_state):
         time_since_contact = (datetime.now() - last_contact_dt).days
         messages_count = sum(1 for msg in state['history'] if msg.startswith("Cliente:"))
 
+        # Generate a conversation summary
+        history = state.get('history', [])
+        summary = "Sin actividad reciente."
+        if history:
+            # Analyze the conversation history
+            if any("Permíteme, déjame revisar esto con el gerente." in msg for msg in history):
+                summary = "Cliente con preguntas pendientes 📝."
+            elif any("Gracias por esperar. Sobre tu pregunta:" in msg for msg in history):
+                summary = "Cliente recibió respuesta del gerente ✅."
+            elif any("¿Cuál es tu nombre?" in msg for msg in history) and not state.get('client_name'):
+                summary = "Cliente no ha proporcionado su nombre 🕵️‍♂️."
+            else:
+                summary = "Cliente activo, interactuando normalmente 😊."
+
         client_info = (
             f"- {client_name} ({phone}):\n"
-            f"  Estado: {status}\n"
-            f"  Presupuesto: {client_budget}\n"
-            f"  Último mensaje: {last_message}\n"
-            f"  Mensajes recibidos: {messages_count}\n"
-            f"  Último contacto: Hace {time_since_contact} día(s)"
+            f"  Estado: {status} {'🟡' if status == 'Esperando Respuesta' else '🟢' if status == 'Interesado' else '🔴'}\n"
+            f"  Presupuesto: {client_budget} 💰\n"
+            f"  Último mensaje: {last_message} 💬\n"
+            f"  Mensajes recibidos: {messages_count} 📩\n"
+            f"  Último contacto: Hace {time_since_contact} día(s) ⏳\n"
+            f"  Resumen: {summary}"
         )
         if state.get('priority', False):
             priority_clients.append(client_info)
@@ -220,32 +235,33 @@ def generate_interested_report(conversation_state):
             project_groups[project].append(client_info)
 
     # Build the report
-    report.append("Reporte de Interesados:")
-    report.append(f"Total de interesados: {interested_count}")
+    report.append("📊 *Reporte de Interesados* 📊")
+    report.append(f"👥 Total de interesados: {interested_count}")
 
     # Add project breakdown
-    report.append("Por Proyecto:")
+    report.append("🏢 Por Proyecto:")
     for project, clients in project_groups.items():
         report.append(f"- {project}:")
         if clients:
             report.extend(clients)
         else:
-            report.append("  No hay clientes interesados.")
+            report.append("  No hay clientes interesados 😔.")
 
     # Add priority clients section
     if priority_clients:
-        report.append("Clientes Prioritarios:")
+        report.append("🌟 Clientes Prioritarios:")
         report.extend(priority_clients)
 
     # Add status summary
-    report.append("Resumen de Estados:")
+    report.append("📋 Resumen de Estados:")
     for status, count in status_counts.items():
-        report.append(f"- {status}: {count} clientes")
+        emoji = '🟢' if status == 'Interesado' else '🟡' if status == 'Esperando Respuesta' else '🔴'
+        report.append(f"- {status}: {count} clientes {emoji}")
 
     return report
 
 def generate_daily_summary(conversation_state):
-    """Generate a daily summary of activity."""
+    """Generate a daily summary of activity with emojis for friendliness."""
     logger.debug("Generating daily activity summary")
     summary = []
     today = datetime.now().date()
@@ -267,21 +283,21 @@ def generate_daily_summary(conversation_state):
         # Check for questions escalated today
         history = state.get('history', [])
         for msg in history:
-            if msg.startswith("Giselle: Permíteme, déjame revisar esto con el gerente.") and last_contact_dt == today:
+            if "Permíteme, déjame revisar esto con el gerente." in msg and last_contact_dt == today:
                 questions_escalated += 1
-            elif msg.startswith("Giselle: Gracias por esperar. Sobre tu pregunta:") and last_contact_dt == today:
+            elif "Gracias por esperar. Sobre tu pregunta:" in msg and last_contact_dt == today:
                 responses_sent += 1
 
         # Check for disinterested clients
         if state.get('no_interest', False) and last_contact_dt == today:
             disinterested_clients += 1
 
-    summary.append("Resumen Diario de Actividad:")
-    summary.append(f"Fecha: {today.strftime('%Y-%m-%d')}")
-    summary.append(f"Nuevos clientes: {new_clients}")
-    summary.append(f"Preguntas escaladas al gerente: {questions_escalated}")
-    summary.append(f"Respuestas enviadas a clientes: {responses_sent}")
-    summary.append(f"Clientes desinteresados: {disinterested_clients}")
+    summary.append("🌞 *Resumen Diario de Actividad* 🌞")
+    summary.append(f"📅 Fecha: {today.strftime('%Y-%m-%d')}")
+    summary.append(f"👤 Nuevos clientes: {new_clients} 🆕")
+    summary.append(f"❓ Preguntas escaladas al gerente: {questions_escalated} 📝")
+    summary.append(f"✅ Respuestas enviadas a clientes: {responses_sent} 💬")
+    summary.append(f"🚪 Clientes desinteresados: {disinterested_clients} 😔")
 
     return summary
 
