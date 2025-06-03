@@ -80,10 +80,43 @@ def handle_gerente_response(incoming_msg, phone, conversation_state, gcs_bucket_
     logger.debug(f"Gerente response: {answer}")
 
     # Prepare response for the client
-    messages = [f"Gracias por esperar. Sobre tu pregunta: {answer}"]
+    messages = [f"Gracias por esperar, aqui tienes: {answer}"]
     logger.debug(f"Prepared response for client {client_phone}: {messages}")
 
     return client_phone, messages
+
+def detect_intention(incoming_msg, conversation_history, is_gerente=False):
+    """Detect the intention of the message using OpenAI."""
+    logger.debug(f"Detecting intention for message: {incoming_msg}")
+    
+    # Prepare the prompt to identify the intention
+    role = "gerente" if is_gerente else "cliente"
+    prompt = (
+        f"Eres un asistente que identifica la intención detrás de un mensaje de un {role}. "
+        f"Tu tarea es clasificar la intención del mensaje en una de las siguientes categorías y extraer información relevante:\n"
+        f"- Para gerente: report (solicitar reporte), client_search (buscar cliente), add_faq (añadir FAQ), priority (marcar prioritario), task (asignar tarea), daily_summary (resumen diario), response (responder a cliente), unknown (desconocido).\n"
+        f"- Para cliente: question (pregunta sobre proyecto), greeting (saludo), budget (informar presupuesto), contact_preference (preferencia de contacto), no_interest (desinterés), unknown (desconocido).\n"
+        f"Devuelve la intención y los datos relevantes (e.g., proyecto, número de teléfono, pregunta, respuesta) en formato JSON.\n\n"
+        f"Historial de conversación:\n{conversation_history}\n\n"
+        f"Mensaje: {incoming_msg}"
+    )
+
+    try:
+        response = openai_client.chat.completions.create(
+            model=bot_config.CHATGPT_MODEL,
+            messages=[
+                {"role": "system", "content": prompt},
+                {"role": "user", "content": incoming_msg}
+            ],
+            max_tokens=100,
+            temperature=0.5
+        )
+        result = json.loads(response.choices[0].message.content.strip())
+        logger.debug(f"Intention detected: {result}")
+        return result
+    except Exception as e:
+        logger.error(f"Error detecting intention with OpenAI: {str(e)}")
+        return {"intention": "unknown", "data": {}}
 
 def process_message(incoming_msg, phone, conversation_state, project_info, conversation_history):
     logger.debug(f"Processing message: {incoming_msg}")
@@ -141,104 +174,129 @@ def process_message(incoming_msg, phone, conversation_state, project_info, conve
         project_data_dict = {}
     
     project_data = project_data_dict.get('description', "Información no disponible para este proyecto.")
-    project_data += "\n\n**Información Adicional:**\n"
+    project_data += "\n\nInformación Adicional:\n"
     project_data += f"Tipo: {project_data_dict.get('type', 'No especificado')}\n"
     project_data += f"Ubicación: {project_data_dict.get('location', 'No especificada')}\n"
 
-    # Build the prompt for the AI
-    prompt = (
-        f"{bot_config.BOT_PERSONALITY}\n\n"
-        f"**Instrucciones para las respuestas:**\n"
-        f"{bot_config.RESPONSE_INSTRUCTIONS}\n\n"
-        f"**Información de los proyectos disponibles:**\n"
-        f"{project_info}\n\n"
-        f"**Datos específicos del proyecto {mentioned_project}:**\n"
-        f"{project_data}\n\n"
-        f"**Historial de conversación:**\n"
-        f"{conversation_history}\n\n"
-        f"**Mensaje del cliente:** \"{incoming_msg}\"\n\n"
-        f"Responde de forma breve y profesional, enfocándote en la venta de propiedades. "
-        f"Interpreta la información del proyecto de manera natural para responder a las preguntas del cliente, "
-        f"como precios, URLs de archivos descargables, o cualquier otro detalle. "
-        f"Si el cliente pregunta por algo que no está en los datos del proyecto, responde con una frase como "
-        f"'No sé exactamente, pero déjame investigarlo con más detalle para ti.'"
-    )
-    # Log only relevant parts instead of the full prompt
-    logger.debug(f"Sending request to OpenAI for client message: '{incoming_msg}', project: {mentioned_project}")
+    # Detect the intention of the message
+    intention_result = detect_intention(incoming_msg, conversation_history, is_gerente=False)
+    intention = intention_result.get("intention", "unknown")
+    intention_data = intention_result.get("data", {})
 
-    try:
-        response = openai_client.chat.completions.create(
-            model=bot_config.CHATGPT_MODEL,
-            messages=[
-                {"role": "system", "content": bot_config.BOT_PERSONALITY},
-                {"role": "user", "content": prompt}
-            ],
-            max_tokens=150,
-            temperature=0.7
+    # Handle based on intention
+    if intention == "greeting":
+        messages = ["Hola, que tal? cual es tu nombre?"]
+    elif intention == "budget":
+        budget = intention_data.get("budget", "No especificado")
+        conversation_state[phone]['client_budget'] = budget
+        messages = ["Entendido, gracias por compartir tu presupuesto!", "Te cuento que tenemos opciones que te pueden interesar, de que proyecto te gustaria saber?"]
+    elif intention == "contact_preference":
+        days = intention_data.get("days", None)
+        time = intention_data.get("time", None)
+        if days:
+            conversation_state[phone]['preferred_days'] = days
+        if time:
+            conversation_state[phone]['preferred_time'] = time
+        messages = ["Perfecto, ya se cuando contactarte!", "Te cuento que tenemos algunos proyectos que te pueden interesar, de cual te gustaria saber?"]
+    elif intention == "no_interest":
+        conversation_state[phone]['no_interest'] = True
+        messages = bot_config.handle_no_interest_response()
+    else:
+        # Default to processing the message as a question or unknown
+        # Build the prompt for the AI
+        prompt = (
+            f"{bot_config.BOT_PERSONALITY}\n\n"
+            f"Instrucciones para las respuestas:\n"
+            f"{bot_config.RESPONSE_INSTRUCTIONS}\n\n"
+            f"Información de los proyectos disponibles:\n"
+            f"{project_info}\n\n"
+            f"Datos específicos del proyecto {mentioned_project}:\n"
+            f"{project_data}\n\n"
+            f"Historial de conversación:\n"
+            f"{conversation_history}\n\n"
+            f"Mensaje del cliente: {incoming_msg}\n\n"
+            f"Responde de forma breve y profesional, enfocándote en la venta de propiedades. "
+            f"Interpreta la información del proyecto de manera natural para responder a las preguntas del cliente, "
+            f"como precios, URLs de archivos descargables, o cualquier otro detalle. "
+            f"Si el cliente pregunta por algo que no está en los datos del proyecto, responde con una frase como "
+            f"'No tengo esa info a la mano, pero déjame revisarlo con el gerente, te parece?'"
         )
-        reply = response.choices[0].message.content.strip()
-        logger.debug(f"Generated response from OpenAI: {reply}")
+        # Log only relevant parts instead of the full prompt
+        logger.debug(f"Sending request to OpenAI for client message: '{incoming_msg}', project: {mentioned_project}")
 
-        # Check if the response indicates the bot doesn't know the answer
-        if "no sé exactamente" in reply.lower() or "déjame investigarlo" in reply.lower():
-            logger.info(f"Bot cannot answer: {incoming_msg}. Contacting gerente.")
-            messages.append("Permíteme, déjame revisar esto con el gerente.")
-            
-            # Send message to gerente
-            project_context = f"sobre {mentioned_project}" if mentioned_project else "general"
-            gerente_message = f"Pregunta de {client_name} {project_context}: {incoming_msg}"
-            logger.debug(f"Preparing to send message to gerente: {gerente_message}")
-            logger.debug(f"Sending to gerente_phone: {gerente_phone} from {whatsapp_sender_number}")
+        try:
+            response = openai_client.chat.completions.create(
+                model=bot_config.CHATGPT_MODEL,
+                messages=[
+                    {"role": "system", "content": bot_config.BOT_PERSONALITY},
+                    {"role": "user", "content": prompt}
+                ],
+                max_tokens=150,
+                temperature=0.7
+            )
+            reply = response.choices[0].message.content.strip()
+            logger.debug(f"Generated response from OpenAI: {reply}")
 
-            try:
-                if twilio_client is None:
-                    raise Exception("Twilio client not initialized.")
+            # Check if the response indicates the bot doesn't know the answer
+            if "no tengo esa info" in reply.lower() or "déjame revisarlo" in reply.lower():
+                logger.info(f"Bot cannot answer: {incoming_msg}. Contacting gerente.")
+                messages.append("No tengo esa info a la mano, pero déjame revisarlo con el gerente, te parece?")
+                
+                # Send message to gerente
+                project_context = f"sobre {mentioned_project}" if mentioned_project else "general"
+                gerente_message = f"Pregunta de {client_name} {project_context}: {incoming_msg}"
+                logger.debug(f"Preparing to send message to gerente: {gerente_message}")
+                logger.debug(f"Sending to gerente_phone: {gerente_phone} from {whatsapp_sender_number}")
 
-                # Verificar si la ventana de 24 horas está activa
-                logger.debug(f"Checking WhatsApp window for {gerente_phone}")
-                window_active = check_whatsapp_window(gerente_phone)
-                logger.debug(f"WhatsApp window active: {window_active}")
+                try:
+                    if twilio_client is None:
+                        raise Exception("Twilio client not initialized.")
 
-                # Enviar mensaje libre al gerente
-                message = twilio_client.messages.create(
-                    from_=whatsapp_sender_number,
-                    body=gerente_message,
-                    to=gerente_phone
-                )
-                logger.info(f"Sent message to gerente: SID {message.sid}, Estado: {message.status}")
+                    # Verificar si la ventana de 24 horas está activa
+                    logger.debug(f"Checking WhatsApp window for {gerente_phone}")
+                    window_active = check_whatsapp_window(gerente_phone)
+                    logger.debug(f"WhatsApp window active: {window_active}")
 
-                # Verificar el estado del mensaje
-                updated_message = twilio_client.messages(message.sid).fetch()
-                logger.info(f"Estado del mensaje actualizado: {updated_message.status}")
-                if updated_message.status == "failed":
-                    logger.error(f"Error al enviar mensaje al gerente: {updated_message.error_code} - {updated_message.error_message}")
-                    messages = ["Lo siento, ocurrió un error al contactar al gerente. ¿En qué más puedo ayudarte?"]
-            except Exception as twilio_e:
-                logger.error(f"Error sending message to gerente via Twilio: {str(twilio_e)}", exc_info=True)
-                messages = ["Lo siento, ocurrió un error al contactar al gerente. ¿En qué más puedo ayudarte?"]
-        else:
-            # Split the reply into messages
-            current_message = ""
-            sentences = reply.split('. ')
-            for sentence in sentences:
-                if not sentence:
-                    continue
-                sentence = sentence.strip()
-                if sentence:
-                    if len(current_message.split('\n')) < 2 and len(current_message) < 100:
-                        current_message += (sentence + '. ') if current_message else sentence + '. '
-                    else:
-                        messages.append(current_message.strip())
-                        current_message = sentence + '. '
-            if current_message:
-                messages.append(current_message.strip())
+                    # Enviar mensaje libre al gerente
+                    message = twilio_client.messages.create(
+                        from_=whatsapp_sender_number,
+                        body=gerente_message,
+                        to=gerente_phone
+                    )
+                    logger.info(f"Sent message to gerente: SID {message.sid}, Estado: {message.status}")
 
-            if not messages:
-                messages = ["No sé exactamente, pero déjame investigarlo con más detalle para ti."]
+                    # Verificar el estado del mensaje
+                    updated_message = twilio_client.messages(message.sid).fetch()
+                    logger.info(f"Estado del mensaje actualizado: {updated_message.status}")
+                    if updated_message.status == "failed":
+                        logger.error(f"Error al enviar mensaje al gerente: {updated_message.error_code} - {updated_message.error_message}")
+                        messages = ["Lo siento, hubo un problema al contactar al gerente. en que mas puedo ayudarte?"]
+                except Exception as twilio_e:
+                    logger.error(f"Error sending message to gerente via Twilio: {str(twilio_e)}", exc_info=True)
+                    messages = ["Lo siento, hubo un problema al contactar al gerente. en que mas puedo ayudarte?"]
+            else:
+                # Split the reply into messages
+                current_message = ""
+                sentences = reply.split('. ')
+                for sentence in sentences:
+                    if not sentence:
+                        continue
+                    sentence = sentence.strip()
+                    if sentence:
+                        if len(current_message.split('\n')) < 2 and len(current_message) < 100:
+                            current_message += (sentence + '. ') if current_message else sentence + '. '
+                        else:
+                            messages.append(current_message.strip())
+                            current_message = sentence + '. '
+                if current_message:
+                    messages.append(current_message.strip())
 
-    except Exception as openai_e:
-        logger.error(f"Fallo con OpenAI API: {str(openai_e)}", exc_info=True)
-        messages = ["Lo siento, no entiendo bien tu pregunta."]
+                if not messages:
+                    messages = ["No tengo esa info a la mano, pero déjame revisarlo con el gerente, te parece?"]
+
+        except Exception as openai_e:
+            logger.error(f"Fallo con OpenAI API: {str(openai_e)}", exc_info=True)
+            messages = ["Lo siento, no entiendo bien tu pregunta."]
 
     logger.debug(f"Final messages: {messages}")
     return messages, mentioned_project
@@ -249,7 +307,7 @@ def handle_audio_message(media_url, phone, twilio_account_sid, twilio_auth_token
     audio_response = requests.get(media_url, auth=(twilio_account_sid, twilio_auth_token))
     if audio_response.status_code != 200:
         logger.error(f"Failed to download audio: {audio_response.status_code}")
-        return ["Lo siento, no pude procesar tu mensaje de audio. ¿Puedes enviarlo como texto?"], None
+        return ["Lo siento, no pude procesar tu mensaje de audio. podrias enviarlo como texto?"], None
 
     # Save the audio file temporarily
     audio_file_path = f"/tmp/audio_{phone.replace(':', '_')}.ogg"
@@ -270,7 +328,7 @@ def handle_audio_message(media_url, phone, twilio_account_sid, twilio_auth_token
         return None, incoming_msg
     except Exception as e:
         logger.error(f"Error transcribing audio: {str(e)}\n{traceback.format_exc()}")
-        return ["Lo siento, no pude entender tu mensaje de audio. ¿Puedes intentarlo de nuevo o escribirlo como texto?", f"Error details for debugging: {str(e)}"], None
+        return ["Lo siento, no pude entender tu mensaje de audio. podrias intentarlo de nuevo o escribirlo como texto?", f"Error details for debugging: {str(e)}"], None
     finally:
         if os.path.exists(audio_file_path):
             os.remove(audio_file_path)
