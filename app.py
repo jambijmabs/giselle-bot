@@ -28,7 +28,9 @@ DEFAULT_PORT = 8080
 WEEKLY_REPORT_DAY = "Sunday"
 WEEKLY_REPORT_TIME = "18:00"
 RECONTACT_TEMPLATE_NAME = "follow_up_template"
-RECONTACT_INACTIVITY_MINUTES = 5  # Tiempo de inactividad para recontacto (5 minutos para prueba)
+RECONTACT_INACTIVITY_MINUTES = 1440  # 1 día = 24 horas = 1440 minutos
+RECONTACT_HOUR = 18  # Hora de recontacto (18:05 UTC-6)
+RECONTACT_MINUTE = 5  # Minuto de recontacto
 
 # Configure logging
 logging.basicConfig(
@@ -466,12 +468,12 @@ def determine_best_contact_time(state):
                 continue
 
     if not response_times:
-        return "10:00 AM", None  # Default to morning if no data
+        return "18:05", None  # Default to 18:05 if no data
 
     # Find the most common hour of response
     hours = [dt.hour for dt in response_times]
     if not hours:
-        return "10:00 AM", None
+        return "18:05", None
 
     most_common_hour = max(set(hours), key=hours.count)
     period = "AM" if most_common_hour < 12 else "PM"
@@ -508,6 +510,7 @@ def handle_client_message(phone, incoming_msg, num_media, media_url=None):
                 'preferred_time': None,
                 'preferred_days': None,
                 'client_name': None,
+                'client_email': None,
                 'client_budget': None,
                 'last_contact': datetime.now().isoformat(),
                 'recontact_attempts': 0,
@@ -524,7 +527,8 @@ def handle_client_message(phone, incoming_msg, num_media, media_url=None):
                 'priority': False,
                 'stage': 'Prospección',
                 'interest_level': 0,
-                'reminder_sent': False
+                'reminder_sent': False,
+                'ingreso_date': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
             }
 
         conversation_state[phone]['history'] = history
@@ -705,148 +709,6 @@ def handle_client_message(phone, incoming_msg, num_media, media_url=None):
         logger.error(f"Error in handle_client_message for {phone}: {str(e)}", exc_info=True)
         raise
 
-@app.route('/whatsapp', methods=['POST'])
-def whatsapp():
-    logger.debug("Entered /whatsapp route")
-    try:
-        if client is None:
-            logger.error("Twilio client not initialized. Cannot process WhatsApp messages.")
-            return "Error: Twilio client not initialized", 500
-
-        utils.load_conversation_state(conversation_state, GCS_BUCKET_NAME, GCS_CONVERSATIONS_PATH)
-        logger.debug("Conversation state reloaded")
-
-        logger.debug(f"Request headers: {dict(request.headers)}")
-        logger.debug(f"Request form data: {request.form}")
-        logger.debug(f"Request values: {dict(request.values)}")
-
-        logger.debug("Extracting message content")
-        phone = request.values.get('From', '')
-        incoming_msg = request.values.get('Body', '').strip()
-        num_media = int(request.values.get('NumMedia', '0'))
-        media_url = request.values.get('MediaUrl0', None) if num_media > 0 else None
-
-        logger.debug(f"From phone: {phone}, Message: {incoming_msg}, NumMedia: {num_media}, MediaUrl: {media_url}")
-
-        if not phone:
-            logger.error("No se encontró 'From' en la solicitud")
-            return "Error: Solicitud incompleta", 400
-
-        normalized_phone = phone.replace("whatsapp:", "").strip()
-        is_gerente = normalized_phone in GERENTE_NUMBERS
-        logger.debug(f"Comparando número: phone='{phone}', normalized_phone='{normalized_phone}', GERENTE_NUMBERS={GERENTE_NUMBERS}, is_gerente={is_gerente}")
-
-        if is_gerente:
-            logger.info(f"Identificado como gerente: {phone}")
-            if phone not in conversation_state:
-                conversation_state[phone] = {
-                    'history': [],
-                    'is_gerente': True,
-                    'last_contact': datetime.now().isoformat(),
-                    'last_incoming_time': datetime.now().isoformat(),
-                    'tasks': [],
-                    'last_weekly_report': None
-                }
-            else:
-                conversation_state[phone]['is_gerente'] = True
-
-            if incoming_msg:
-                return handle_gerente_message(phone, incoming_msg)
-            elif num_media > 0 and media_url:
-                error_messages, transcribed_msg = message_handler.handle_audio_message(
-                    media_url, phone, TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN
-                )
-                if error_messages:
-                    utils.send_consecutive_messages(phone, error_messages, client, WHATSAPP_SENDER_NUMBER)
-                    return "Error procesando audio", 200
-                if transcribed_msg:
-                    return handle_gerente_message(phone, transcribed_msg)
-            else:
-                logger.error("Mensaje del gerente sin contenido de texto o audio")
-                return "Error: Mensaje sin contenido", 400
-
-        else:
-            logger.info(f"Identificado como cliente: {phone}")
-            if phone not in conversation_state:
-                conversation_state[phone] = {
-                    'history': [],
-                    'name_asked': 0,
-                    'messages_without_response': 0,
-                    'preferred_time': None,
-                    'preferred_days': None,
-                    'client_name': None,
-                    'client_budget': None,
-                    'last_contact': datetime.now().isoformat(),
-                    'recontact_attempts': 0,
-                    'no_interest': False,
-                    'schedule_next': None,
-                    'last_incoming_time': datetime.now().isoformat(),
-                    'last_response_time': datetime.now().isoformat(),
-                    'introduced': False,
-                    'project_info_shared': {},
-                    'last_mentioned_project': None,
-                    'pending_question': None,
-                    'pending_response_time': None,
-                    'is_gerente': False,
-                    'priority': False,
-                    'stage': 'Prospección',
-                    'interest_level': 0,
-                    'reminder_sent': False
-                }
-
-            # Check if the client has been introduced; if not, introduce the bot
-            if not conversation_state[phone].get('introduced', False):
-                conversation_state[phone]['introduced'] = True
-                conversation_state[phone]['name_asked'] = 1
-                messages = ["Hola, soy Giselle de FAV Living, desarrolladora inmobiliaria. Podrías darme tu nombre para registrarte?"]
-                utils.send_consecutive_messages(phone, messages, client, WHATSAPP_SENDER_NUMBER)
-                conversation_state[phone]['history'].append(f"Giselle: {messages[0]}")
-                utils.save_conversation_state(conversation_state, GCS_BUCKET_NAME, GCS_CONVERSATIONS_PATH)
-                utils.save_conversation_history(phone, conversation_state[phone]['history'], GCS_BUCKET_NAME, GCS_CONVERSATIONS_PATH)
-                utils.save_client_info(phone, conversation_state, GCS_BUCKET_NAME, GCS_CONVERSATIONS_PATH)
-                return "Mensaje enviado", 200
-
-            if incoming_msg:
-                return handle_client_message(phone, incoming_msg, num_media, media_url)
-            elif num_media > 0 and media_url:
-                error_messages, transcribed_msg = message_handler.handle_audio_message(
-                    media_url, phone, TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN
-                )
-                if error_messages:
-                    utils.send_consecutive_messages(phone, error_messages, client, WHATSAPP_SENDER_NUMBER)
-                    return "Error procesando audio", 200
-                if transcribed_msg:
-                    return handle_client_message(phone, transcribed_msg, num_media=0, media_url=None)
-            else:
-                logger.error("Mensaje del cliente sin contenido de texto o audio")
-                return "Error: Mensaje sin contenido", 400
-
-    except Exception as e:
-        logger.error(f"Error inesperado en /whatsapp: {str(e)}", exc_info=True)
-        try:
-            phone = phone.strip()
-            if not phone.startswith('whatsapp:+'):
-                phone = phone.replace('whatsapp:', '').strip()
-                phone = f"whatsapp:+{phone.replace(' ', '')}"
-            logger.debug(f"Phone number in exception handler: {repr(phone)}")
-            if not phone.startswith('whatsapp:+'):
-                logger.error(f"Invalid phone number format in exception handler: {repr(phone)}")
-                return "Error: Invalid phone number format in exception handler", 400
-            message = client.messages.create(
-                from_=WHATSAPP_SENDER_NUMBER,
-                body="Lo siento, ocurrió un error. En qué más puedo ayudarte?",
-                to=phone
-            )
-            logger.info(f"Fallback message sent: SID {message.sid}, Estado: {message.status}")
-            if not conversation_state[phone].get('is_gerente', False):
-                conversation_state[phone]['history'].append("Giselle: Lo siento, ocurrió un error. En qué más puedo ayudarte?")
-                utils.save_conversation_state(conversation_state, GCS_BUCKET_NAME, GCS_CONVERSATIONS_PATH)
-                utils.save_conversation_history(phone, conversation_state[phone]['history'], GCS_BUCKET_NAME, GCS_CONVERSATIONS_PATH)
-                utils.save_client_info(phone, conversation_state, GCS_BUCKET_NAME, GCS_CONVERSATIONS_PATH)
-        except Exception as twilio_e:
-            logger.error(f"Error sending fallback message: {str(twilio_e)}")
-        return "Error interno del servidor", 500
-
 @app.route('/', methods=['GET'])
 def root():
     logger.debug("Solicitud GET recibida en /")
@@ -861,34 +723,54 @@ def test():
 def trigger_recontact():
     logger.info("Triggering recontact scheduling")
     current_time = datetime.now()
+    logger.debug(f"Current time: {current_time}")
+
+    # Verificar si la hora actual es 18:05 (UTC-6)
+    current_hour = current_time.hour
+    current_minute = current_time.minute
+    if current_hour != RECONTACT_HOUR or current_minute != RECONTACT_MINUTE:
+        logger.debug(f"Skipping recontact: Current time ({current_hour}:{current_minute}) is not {RECONTACT_HOUR}:{RECONTACT_MINUTE}")
+        return "Not the scheduled recontact time", 200
+
+    logger.debug(f"Conversation state: {conversation_state}")
+
     for phone, state in list(conversation_state.items()):
+        logger.debug(f"Processing client: {phone}")
         if state.get('is_gerente', False):
+            logger.debug(f"Skipping {phone}: Is gerente")
             continue
         if state.get('no_interest', False):
+            logger.debug(f"Skipping {phone}: No interest")
             continue
 
         # Check if the client has stopped responding
         last_response_time = state.get('last_response_time')
+        logger.debug(f"Last response time for {phone}: {last_response_time}")
         if not last_response_time:
+            logger.debug(f"Skipping {phone}: No last response time")
             continue
 
-        last_response = datetime.fromisoformat(last_response_time)
-        time_since_last_response = (current_time - last_response).total_seconds() / 60  # in minutes
+        try:
+            last_response = datetime.fromisoformat(last_response_time)
+        except ValueError as e:
+            logger.error(f"Invalid last_response_time format for {phone}: {last_response_time}, error: {str(e)}")
+            continue
 
-        if time_since_last_response < RECONTACT_INACTIVITY_MINUTES:  # Wait 5 minutes for testing
+        time_since_last_response = (current_time - last_response).total_seconds() / 60  # in minutes
+        logger.debug(f"Time since last response for {phone}: {time_since_last_response} minutes")
+
+        if time_since_last_response < RECONTACT_INACTIVITY_MINUTES:  # Wait 1 day
+            logger.debug(f"Skipping {phone}: Not enough inactivity time ({time_since_last_response} < {RECONTACT_INACTIVITY_MINUTES})")
             continue
 
         if state.get('recontact_attempts', 0) >= 3:  # Limit recontact attempts
+            logger.debug(f"Marking {phone} as no interest: Max recontact attempts reached")
             state['no_interest'] = True
-            continue
-
-        # Determine best time to contact
-        best_time, best_day = determine_best_contact_time(state)
-        if best_day and current_time.strftime('%A') != best_day:
             continue
 
         # Check if within 24-hour window
         if check_whatsapp_window(phone):
+            logger.debug(f"{phone} is within 24-hour window")
             # Prepare recontact message
             client_name = state.get('client_name', 'Cliente')
             last_mentioned_project = state.get('last_mentioned_project', 'uno de nuestros proyectos')
@@ -901,11 +783,14 @@ def trigger_recontact():
             for msg in messages:
                 state['history'].append(f"Giselle: {msg}")
         else:
+            logger.debug(f"{phone} is outside 24-hour window, sending template message")
             # Use pre-approved template message
             client_name = state.get('client_name', 'Cliente')
             last_mentioned_project = state.get('last_mentioned_project', 'uno de nuestros proyectos')
             if send_template_message(phone, client_name, last_mentioned_project):
                 state['history'].append(f"Giselle: [Template] Hola {client_name}, soy Giselle de FAV Living. Quería dar seguimiento a nuestra conversación sobre {last_mentioned_project}.")
+            else:
+                logger.error(f"Failed to send template message to {phone}")
 
         state['recontact_attempts'] = state.get('recontact_attempts', 0) + 1
         state['schedule_next'] = None
@@ -930,6 +815,7 @@ def trigger_recontact():
             utils.send_consecutive_messages(gerente_phone, report_messages, client, WHATSAPP_SENDER_NUMBER)
             gerente_state['last_weekly_report'] = current_time.isoformat()
 
+    logger.info("Recontact scheduling completed")
     return "Recontact scheduling triggered"
 
 # Application Startup
