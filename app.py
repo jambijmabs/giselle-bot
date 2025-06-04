@@ -46,6 +46,12 @@ app = Flask(__name__)
 # Configure logger
 logger = logging.getLogger(__name__)
 
+# Log registered routes after app initialization
+with app.app_context():
+    logger.info("Registered routes:")
+    for rule in app.url_map.iter_rules():
+        logger.info(f"Route: {rule.endpoint} -> {rule}")
+
 # Initialize Twilio client
 client = None
 try:
@@ -698,6 +704,148 @@ def handle_client_message(phone, incoming_msg, num_media, media_url=None):
     except Exception as e:
         logger.error(f"Error in handle_client_message for {phone}: {str(e)}", exc_info=True)
         raise
+
+@app.route('/whatsapp', methods=['POST'])
+def whatsapp():
+    logger.debug("Entered /whatsapp route")
+    try:
+        if client is None:
+            logger.error("Twilio client not initialized. Cannot process WhatsApp messages.")
+            return "Error: Twilio client not initialized", 500
+
+        utils.load_conversation_state(conversation_state, GCS_BUCKET_NAME, GCS_CONVERSATIONS_PATH)
+        logger.debug("Conversation state reloaded")
+
+        logger.debug(f"Request headers: {dict(request.headers)}")
+        logger.debug(f"Request form data: {request.form}")
+        logger.debug(f"Request values: {dict(request.values)}")
+
+        logger.debug("Extracting message content")
+        phone = request.values.get('From', '')
+        incoming_msg = request.values.get('Body', '').strip()
+        num_media = int(request.values.get('NumMedia', '0'))
+        media_url = request.values.get('MediaUrl0', None) if num_media > 0 else None
+
+        logger.debug(f"From phone: {phone}, Message: {incoming_msg}, NumMedia: {num_media}, MediaUrl: {media_url}")
+
+        if not phone:
+            logger.error("No se encontró 'From' en la solicitud")
+            return "Error: Solicitud incompleta", 400
+
+        normalized_phone = phone.replace("whatsapp:", "").strip()
+        is_gerente = normalized_phone in GERENTE_NUMBERS
+        logger.debug(f"Comparando número: phone='{phone}', normalized_phone='{normalized_phone}', GERENTE_NUMBERS={GERENTE_NUMBERS}, is_gerente={is_gerente}")
+
+        if is_gerente:
+            logger.info(f"Identificado como gerente: {phone}")
+            if phone not in conversation_state:
+                conversation_state[phone] = {
+                    'history': [],
+                    'is_gerente': True,
+                    'last_contact': datetime.now().isoformat(),
+                    'last_incoming_time': datetime.now().isoformat(),
+                    'tasks': [],
+                    'last_weekly_report': None
+                }
+            else:
+                conversation_state[phone]['is_gerente'] = True
+
+            if incoming_msg:
+                return handle_gerente_message(phone, incoming_msg)
+            elif num_media > 0 and media_url:
+                error_messages, transcribed_msg = message_handler.handle_audio_message(
+                    media_url, phone, TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN
+                )
+                if error_messages:
+                    utils.send_consecutive_messages(phone, error_messages, client, WHATSAPP_SENDER_NUMBER)
+                    return "Error procesando audio", 200
+                if transcribed_msg:
+                    return handle_gerente_message(phone, transcribed_msg)
+            else:
+                logger.error("Mensaje del gerente sin contenido de texto o audio")
+                return "Error: Mensaje sin contenido", 400
+
+        else:
+            logger.info(f"Identificado como cliente: {phone}")
+            if phone not in conversation_state:
+                conversation_state[phone] = {
+                    'history': [],
+                    'name_asked': 0,
+                    'messages_without_response': 0,
+                    'preferred_time': None,
+                    'preferred_days': None,
+                    'client_name': None,
+                    'client_budget': None,
+                    'last_contact': datetime.now().isoformat(),
+                    'recontact_attempts': 0,
+                    'no_interest': False,
+                    'schedule_next': None,
+                    'last_incoming_time': datetime.now().isoformat(),
+                    'last_response_time': datetime.now().isoformat(),
+                    'introduced': False,
+                    'project_info_shared': {},
+                    'last_mentioned_project': None,
+                    'pending_question': None,
+                    'pending_response_time': None,
+                    'is_gerente': False,
+                    'priority': False,
+                    'stage': 'Prospección',
+                    'interest_level': 0,
+                    'reminder_sent': False
+                }
+
+            # Check if the client has been introduced; if not, introduce the bot
+            if not conversation_state[phone].get('introduced', False):
+                conversation_state[phone]['introduced'] = True
+                conversation_state[phone]['name_asked'] = 1
+                messages = ["Hola, soy Giselle de FAV Living, desarrolladora inmobiliaria. Podrías darme tu nombre para registrarte?"]
+                utils.send_consecutive_messages(phone, messages, client, WHATSAPP_SENDER_NUMBER)
+                conversation_state[phone]['history'].append(f"Giselle: {messages[0]}")
+                utils.save_conversation_state(conversation_state, GCS_BUCKET_NAME, GCS_CONVERSATIONS_PATH)
+                utils.save_conversation_history(phone, conversation_state[phone]['history'], GCS_BUCKET_NAME, GCS_CONVERSATIONS_PATH)
+                utils.save_client_info(phone, conversation_state, GCS_BUCKET_NAME, GCS_CONVERSATIONS_PATH)
+                return "Mensaje enviado", 200
+
+            if incoming_msg:
+                return handle_client_message(phone, incoming_msg, num_media, media_url)
+            elif num_media > 0 and media_url:
+                error_messages, transcribed_msg = message_handler.handle_audio_message(
+                    media_url, phone, TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN
+                )
+                if error_messages:
+                    utils.send_consecutive_messages(phone, error_messages, client, WHATSAPP_SENDER_NUMBER)
+                    return "Error procesando audio", 200
+                if transcribed_msg:
+                    return handle_client_message(phone, transcribed_msg, num_media=0, media_url=None)
+            else:
+                logger.error("Mensaje del cliente sin contenido de texto o audio")
+                return "Error: Mensaje sin contenido", 400
+
+    except Exception as e:
+        logger.error(f"Error inesperado en /whatsapp: {str(e)}", exc_info=True)
+        try:
+            phone = phone.strip()
+            if not phone.startswith('whatsapp:+'):
+                phone = phone.replace('whatsapp:', '').strip()
+                phone = f"whatsapp:+{phone.replace(' ', '')}"
+            logger.debug(f"Phone number in exception handler: {repr(phone)}")
+            if not phone.startswith('whatsapp:+'):
+                logger.error(f"Invalid phone number format in exception handler: {repr(phone)}")
+                return "Error: Invalid phone number format in exception handler", 400
+            message = client.messages.create(
+                from_=WHATSAPP_SENDER_NUMBER,
+                body="Lo siento, ocurrió un error. En qué más puedo ayudarte?",
+                to=phone
+            )
+            logger.info(f"Fallback message sent: SID {message.sid}, Estado: {message.status}")
+            if not conversation_state[phone].get('is_gerente', False):
+                conversation_state[phone]['history'].append("Giselle: Lo siento, ocurrió un error. En qué más puedo ayudarte?")
+                utils.save_conversation_state(conversation_state, GCS_BUCKET_NAME, GCS_CONVERSATIONS_PATH)
+                utils.save_conversation_history(phone, conversation_state[phone]['history'], GCS_BUCKET_NAME, GCS_CONVERSATIONS_PATH)
+                utils.save_client_info(phone, conversation_state, GCS_BUCKET_NAME, GCS_CONVERSATIONS_PATH)
+        except Exception as twilio_e:
+            logger.error(f"Error sending fallback message: {str(twilio_e)}")
+        return "Error interno del servidor", 500
 
 @app.route('/', methods=['GET'])
 def root():
