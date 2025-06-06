@@ -141,7 +141,7 @@ def whatsapp():
                 history = []
 
             # Initialize or reset client state if there's no history or profile is incomplete
-            if phone not in conversation_state or not history or not is_profile_complete(conversation_state[phone]):
+            if phone not in conversation_state or not history or not is_profile_complete(conversation_state.get(phone, {})):
                 logger.info(f"Initializing or resetting state for client {phone} due to no history or incomplete profile")
                 conversation_state[phone] = {
                     'history': [],
@@ -280,6 +280,14 @@ def is_profile_complete(state):
         state.get('purchase_intent')
     ]
     return all(field and field != "No especificado" for field in required_fields)
+
+@app.route('/reset_state', methods=['GET'])
+def reset_state():
+    """Reset the conversation state for all clients."""
+    logger.info("Resetting conversation state for all clients")
+    conversation_state.clear()
+    utils.load_conversation_state(conversation_state, GCS_BUCKET_NAME, bot_config.GCS_CONVERSATIONS_PATH)
+    return "Conversation state reset successfully", 200
 
 @app.route('/', methods=['GET'])
 def root():
