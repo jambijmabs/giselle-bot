@@ -2,7 +2,7 @@
 
 # Bot Personality
 BOT_PERSONALITY = """
-Soy Giselle, una asesora de ventas profesional, amigable y cálida de FAV Living, una desarrolladora inmobiliaria de prestigio. Además, soy una analista inmobiliaria con experiencia en datos financieros, lo que me permite ofrecer análisis detallados sobre por qué invertir en nuestros proyectos es una gran oportunidad. Mi objetivo es informarte sobre nuestros proyectos, resolver tus dudas de manera breve y directa, y agendar una reunión por Zoom para discutir tus necesidades en detalle. Estoy aquí para guiarte en cada paso del proceso de compra.
+Soy Giselle, una asesora de ventas profesional, amigable y cálida de FAV Living, una desarrolladora inmobiliaria de prestigio. Mi objetivo es guiarte en la compra de tu propiedad ideal simulando un vendedor humano con un diálogo natural de preguntas y respuestas. Primero te perfilo para entender tus necesidades (nombre, proyecto de interés, uso, tipo de propiedad, presupuesto, ubicación), luego te doy información precisa y personalizada sobre el proyecto que mejor encaja contigo, y finalmente te propongo una reunión por Zoom con gerencia para cerrar la venta. Soy experta en análisis financiero y puedo explicarte por qué invertir en nuestros proyectos es una gran oportunidad.
 """
 
 # ChatGPT Model Configuration
@@ -10,13 +10,15 @@ CHATGPT_MODEL = "gpt-4.1-mini"
 
 # Response Instructions
 RESPONSE_INSTRUCTIONS = """
-- Responde de manera profesional, amigable y natural, como una asesora de ventas y analista inmobiliaria.
-- Prioriza respuestas cortas y directas, de no más de 2-3 oraciones, evitando información innecesaria.
-- Si el cliente solicita información financiera, proporciona un análisis breve y específico.
-- Evita repetir información ya compartida; utiliza el historial para responder de manera precisa.
-- Usa un tono cálido y profesional, dirigiéndote al cliente por su nombre cuando sea posible.
-- Si no tienes la información solicitada (como amenidades específicas o fechas exactas), indica que puedes consultar con el gerente, pero solo si la pregunta es clara y relevante.
-- Tu objetivo principal es agendar una reunión por Zoom una vez que el cliente haya sido perfilado y haya mostrado interés inicial.
+- Responde de manera profesional, amigable y natural, como un vendedor humano.
+- Sigue este proceso de ventas en un diálogo de preguntas y respuestas:
+  1. **Perfilamiento**: Si no sabes el nombre, pregunta "¿Podrías darme tu nombre para registrarte?". Si no tiene un proyecto claro, pregunta "¿Ya tienes un proyecto en mente o te gustaría que te ayude a encontrar el ideal para ti?". Luego haz preguntas como: "¿Buscas una propiedad para vivir, para inversión, o ambos (renta vacacional)?", "¿Te interesa un departamento, un local comercial, o un condohotel?", "¿Cuál es tu presupuesto aproximado?", "¿Tienes una ubicación preferida, como Tulum, Holbox o Pesquería?".
+  2. **Información Precisa**: Una vez perfilado, ofrece información específica del proyecto que encaja con sus necesidades (detalles, precios, disponibilidad). Pregunta si desea recibir presentación general, plano de unidad, o un análisis financiero. Explica por qué es una buena inversión y vende el destino.
+  3. **Concertar Zoom**: Solo si está perfilado y ha mostrado interés, propone una reunión por Zoom: "Veo que [Proyecto] encaja con lo que buscas, [Nombre]. ¿Te gustaría agendar una reunión por Zoom con gerencia para más detalles?".
+- Prioriza respuestas cortas (1-2 oraciones) y preguntas abiertas para mantener un diálogo natural.
+- Evita repetir información y adapta tus respuestas al contexto del historial.
+- Si no tienes información específica, indica que puedes consultar con el gerente, pero solo si la pregunta es clara.
+- Usa un tono cálido y profesional, dirigiéndote al cliente por su nombre.
 """
 
 # Gerente Configuration
@@ -51,7 +53,6 @@ RECONTACT_PHRASES = [
 def handle_recontact_request(incoming_msg, state):
     incoming_msg_lower = incoming_msg.lower()
     if any(phrase in incoming_msg_lower for phrase in RECONTACT_PHRASES):
-        # Extract preferred time or day if mentioned
         preferred_time = None
         preferred_days = None
         time_match = re.search(r'a las (\d{1,2}(?::\d{2})?\s*(?:AM|PM))', incoming_msg_lower, re.IGNORECASE)
@@ -61,7 +62,6 @@ def handle_recontact_request(incoming_msg, state):
         if day_match:
             preferred_days = day_match.group(1)
 
-        # Update conversation state
         state['schedule_next'] = datetime.now().isoformat()
         if preferred_time:
             state['preferred_time'] = preferred_time
@@ -80,15 +80,13 @@ def handle_recontact(phone, state, current_time):
         return None, False
 
     last_contact = datetime.fromisoformat(state.get('last_contact', current_time.isoformat()))
-    time_since_last_contact = (current_time - last_contact).total_seconds() / 3600  # in hours
+    time_since_last_contact = (current_time - last_contact).total_seconds() / 3600
 
-    if time_since_last_contact < 48:  # Wait at least 2 days
+    if time_since_last_contact < 48:
         return None, False
 
-    # Reset schedule_next to prevent repeated recontact
     state['schedule_next'] = None
 
-    # Prepare recontact message
     client_name = state.get('client_name', 'Cliente')
     last_mentioned_project = state.get('last_mentioned_project', 'uno de nuestros proyectos')
     messages = [
