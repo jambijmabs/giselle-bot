@@ -13,6 +13,7 @@ import message_handler
 from google.cloud import storage
 import pandas as pd
 import gcsfs
+import pytz
 
 # Configuration Section
 WHATSAPP_SENDER_NUMBER = "whatsapp:+18188732305"
@@ -34,6 +35,7 @@ RECONTACT_MIN_DAYS = 1
 RECONTACT_HOUR_CST = 18
 RECONTACT_MINUTE_CST = 5
 LEADS_EXCEL_PATH = "leads_giselle.xlsx"
+CST_TIMEZONE = pytz.timezone("America/Mexico_City")
 
 # Configure logging
 logging.basicConfig(
@@ -112,7 +114,7 @@ def check_whatsapp_window(phone):
         messages = client.messages.list(
             from_=phone,
             to=WHATSAPP_SENDER_NUMBER,
-            date_sent_after=datetime.utcnow() - timedelta(hours=24)
+            date_sent_after=datetime.now(CST_TIMEZONE) - timedelta(hours=24)
         )
         if messages:
             logger.debug(f"WhatsApp 24-hour window is active for {phone}. Last message: {messages[0].date_sent}")
@@ -470,7 +472,7 @@ def handle_gerente_message(phone, incoming_msg):
                 'client_phone': client_phone,
                 'action': 'Llamar',
                 'time': time_str,
-                'date': (datetime.now() + timedelta(days=1)).strftime('%Y-%m-%d')
+                'date': (datetime.now(CST_TIMEZONE) + timedelta(days=1)).strftime('%Y-%m-%d')
             }
             if 'tasks' not in conversation_state[phone]:
                 conversation_state[phone]['tasks'] = []
@@ -580,9 +582,9 @@ def determine_best_contact_time(state):
     response_times = []
     for msg in state.get('history', []):
         if msg.startswith("Cliente:"):
-            timestamp = state.get('last_response_time', datetime.now().isoformat())
+            timestamp = state.get('last_response_time', datetime.now(CST_TIMEZONE).isoformat())
             try:
-                dt = datetime.fromisoformat(timestamp)
+                dt = datetime.fromisoformat(timestamp).astimezone(CST_TIMEZONE)
                 response_times.append(dt)
             except ValueError:
                 continue
@@ -629,13 +631,13 @@ def handle_client_message(phone, incoming_msg, num_media, media_url=None):
                 'preferred_days': None,
                 'client_name': None,
                 'client_budget': None,
-                'last_contact': datetime.now().isoformat(),
+                'last_contact': datetime.now(CST_TIMEZONE).isoformat(),
                 'recontact_attempts': 0,
                 'no_interest': False,
                 'schedule_next': None,
-                'last_incoming_time': datetime.now().isoformat(),
-                'last_response_time': datetime.now().isoformat(),
-                'first_contact': datetime.now().isoformat(),
+                'last_incoming_time': datetime.now(CST_TIMEZONE).isoformat(),
+                'last_response_time': datetime.now(CST_TIMEZONE).isoformat(),
+                'first_contact': datetime.now(CST_TIMEZONE).isoformat(),
                 'introduced': False,
                 'project_info_shared': {},
                 'last_mentioned_project': None,
@@ -651,8 +653,8 @@ def handle_client_message(phone, incoming_msg, num_media, media_url=None):
         conversation_state[phone]['history'] = history
         conversation_state[phone]['history'].append(f"Cliente: {incoming_msg}")
         conversation_state[phone]['history'] = conversation_state[phone]['history'][-10:]
-        conversation_state[phone]['last_contact'] = datetime.now().isoformat()
-        conversation_state[phone]['last_response_time'] = datetime.now().isoformat()
+        conversation_state[phone]['last_contact'] = datetime.now(CST_TIMEZONE).isoformat()
+        conversation_state[phone]['last_response_time'] = datetime.now(CST_TIMEZONE).isoformat()
 
         if any(phrase in incoming_msg.lower() for phrase in ["quiero comprar", "estoy listo", "confirmo"]):
             conversation_state[phone]['stage'] = 'Cierre'
@@ -782,8 +784,8 @@ def handle_client_message(phone, incoming_msg, num_media, media_url=None):
             conversation_state[phone]['last_mentioned_project'] = mentioned_project
             logger.debug(f"Updated last_mentioned_project to: {mentioned_project}")
 
-        last_incoming = datetime.fromisoformat(conversation_state[phone]['last_incoming_time'])
-        time_since_last_incoming = (datetime.now() - last_incoming).total_seconds() / 3600
+        last_incoming = datetime.fromisoformat(conversation_state[phone]['last_incoming_time']).astimezone(CST_TIMEZONE)
+        time_since_last_incoming = (datetime.now(CST_TIMEZONE) - last_incoming).total_seconds() / 3600
         if 20 <= time_since_last_incoming < 24 and not conversation_state[phone].get('reminder_sent', False):
             reminder = [
                 f"Hola {conversation_state[phone].get('client_name', 'Cliente')}, ha pasado un tiempo desde nuestro último mensaje.",
@@ -851,8 +853,8 @@ def whatsapp():
                 conversation_state[phone] = {
                     'history': [],
                     'is_gerente': True,
-                    'last_contact': datetime.now().isoformat(),
-                    'last_incoming_time': datetime.now().isoformat(),
+                    'last_contact': datetime.now(CST_TIMEZONE).isoformat(),
+                    'last_incoming_time': datetime.now(CST_TIMEZONE).isoformat(),
                     'tasks': [],
                     'last_weekly_report': None,
                     'awaiting_menu_choice': False
@@ -886,13 +888,13 @@ def whatsapp():
                     'preferred_days': None,
                     'client_name': None,
                     'client_budget': None,
-                    'last_contact': datetime.now().isoformat(),
+                    'last_contact': datetime.now(CST_TIMEZONE).isoformat(),
                     'recontact_attempts': 0,
                     'no_interest': False,
                     'schedule_next': None,
-                    'last_incoming_time': datetime.now().isoformat(),
-                    'last_response_time': datetime.now().isoformat(),
-                    'first_contact': datetime.now().isoformat(),
+                    'last_incoming_time': datetime.now(CST_TIMEZONE).isoformat(),
+                    'last_response_time': datetime.now(CST_TIMEZONE).isoformat(),
+                    'first_contact': datetime.now(CST_TIMEZONE).isoformat(),
                     'introduced': False,
                     'project_info_shared': {},
                     'last_mentioned_project': None,
@@ -970,7 +972,7 @@ def test():
 @app.route('/schedule_recontact', methods=['GET'])
 def trigger_recontact():
     logger.info("Triggering recontact scheduling")
-    current_time = datetime.now()
+    current_time = datetime.now(CST_TIMEZONE)
     logger.debug(f"Current time (CST): {current_time}")
 
     for phone, state in list(conversation_state.items()):
@@ -989,7 +991,7 @@ def trigger_recontact():
             continue
 
         try:
-            last_response = datetime.fromisoformat(last_response_time)
+            last_response = datetime.fromisoformat(last_response_time).astimezone(CST_TIMEZONE)
         except ValueError as e:
             logger.error(f"Invalid last_response_time format for {phone}: {last_response_time}, error: {str(e)}")
             continue
@@ -1041,7 +1043,7 @@ def trigger_recontact():
 
         last_report = gerente_state.get('last_weekly_report')
         if last_report:
-            last_report_time = datetime.fromisoformat(last_report)
+            last_report_time = datetime.fromisoformat(last_report).astimezone(CST_TIMEZONE)
             if (current_time - last_report_time).days < 7:
                 continue
 
