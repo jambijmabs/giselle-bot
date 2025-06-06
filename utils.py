@@ -14,7 +14,7 @@ downloadable_links = {}
 downloadable_urls = {}
 downloadable_files = {}
 gerente_respuestas = {}
-faq_data = {}  # New global to store FAQ data (project -> {question: answer})
+faq_data = {}
 
 # Initialize Google Cloud Storage client
 try:
@@ -24,25 +24,20 @@ except Exception as e:
     storage_client = None
 
 def get_conversation_history_filename(phone):
-    """Generate the filename for conversation history based on phone number."""
     return f"{phone.replace('+', '').replace(':', '_')}_conversation.txt"
 
 def get_client_info_filename(phone):
-    """Generate the filename for client info based on phone number."""
     return f"client_info_{phone.replace('+', '').replace(':', '_')}.txt"
 
 def get_gerente_respuestas_filename():
-    """Generate the filename for gerente responses."""
     return "respuestas_gerencia.txt"
 
 def get_faq_filename(project=None):
-    """Generate the filename for FAQ based on project."""
     if project:
         return f"{project.lower()}_faq.txt"
     return "general_faq.txt"
 
 def upload_to_gcs(bucket_name, source_file_path, destination_blob_name):
-    """Upload a file to Google Cloud Storage."""
     if storage_client is None:
         logger.error("Google Cloud Storage client not initialized. Cannot upload to GCS.")
         return
@@ -55,7 +50,6 @@ def upload_to_gcs(bucket_name, source_file_path, destination_blob_name):
         logger.error(f"Error uploading to GCS: {str(e)}")
 
 def download_from_gcs(bucket_name, source_blob_name, destination_file_path):
-    """Download a file from Google Cloud Storage."""
     if storage_client is None:
         logger.error("Google Cloud Storage client not initialized. Cannot download from GCS.")
         return False
@@ -70,7 +64,6 @@ def download_from_gcs(bucket_name, source_blob_name, destination_file_path):
         return False
 
 def load_conversation_state(conversation_state, gcs_bucket_name, gcs_conversations_path):
-    """Load conversation state from file in GCS."""
     try:
         local_state_file = "/tmp/conversation_state.json"
         destination_blob_name = os.path.join(gcs_conversations_path, "conversation_state.json")
@@ -87,7 +80,6 @@ def load_conversation_state(conversation_state, gcs_bucket_name, gcs_conversatio
         conversation_state.clear()
 
 def save_conversation_state(conversation_state, gcs_bucket_name, gcs_conversations_path):
-    """Save conversation state to file in GCS."""
     try:
         local_state_file = "/tmp/conversation_state.json"
         destination_blob_name = os.path.join(gcs_conversations_path, "conversation_state.json")
@@ -99,7 +91,6 @@ def save_conversation_state(conversation_state, gcs_bucket_name, gcs_conversatio
         logger.error(f"Error saving conversation state: {str(e)}")
 
 def load_conversation_history(phone, gcs_bucket_name, gcs_conversations_path):
-    """Load conversation history from file in GCS."""
     filename = get_conversation_history_filename(phone)
     destination_blob_name = os.path.join(gcs_conversations_path, filename)
     local_file_path = f"/tmp/{filename}"
@@ -117,7 +108,6 @@ def load_conversation_history(phone, gcs_bucket_name, gcs_conversations_path):
         return []
 
 def save_conversation_history(phone, history, gcs_bucket_name, gcs_conversations_path):
-    """Save conversation history to file in GCS."""
     filename = get_conversation_history_filename(phone)
     destination_blob_name = os.path.join(gcs_conversations_path, filename)
     local_file_path = f"/tmp/{filename}"
@@ -131,7 +121,6 @@ def save_conversation_history(phone, history, gcs_bucket_name, gcs_conversations
         logger.error(f"Error saving conversation history for {phone}: {str(e)}")
 
 def save_client_info(phone, conversation_state, gcs_bucket_name, gcs_conversations_path):
-    """Save client information to a text file in GCS."""
     filename = get_client_info_filename(phone)
     destination_blob_name = os.path.join(gcs_conversations_path, filename)
     local_file_path = f"/tmp/{filename}"
@@ -142,6 +131,8 @@ def save_client_info(phone, conversation_state, gcs_bucket_name, gcs_conversatio
         preferred_days = client_info.get('preferred_days', 'No proporcionado')
         preferred_time = client_info.get('preferred_time', 'No proporcionado')
         priority = client_info.get('priority', False)
+        zoom_scheduled = client_info.get('zoom_scheduled', False)
+        zoom_details = client_info.get('zoom_details', {})
         
         with open(local_file_path, 'w', encoding='utf-8') as f:
             f.write(f"Información del Cliente: {phone}\n")
@@ -150,45 +141,55 @@ def save_client_info(phone, conversation_state, gcs_bucket_name, gcs_conversatio
             f.write(f"Días Preferidos: {preferred_days}\n")
             f.write(f"Horario Preferido: {preferred_time}\n")
             f.write(f"Prioritario: {'Sí' if priority else 'No'}\n")
+            f.write(f"Reunión Zoom Agendada: {'Sí' if zoom_scheduled else 'No'}\n")
+            if zoom_scheduled and zoom_details:
+                f.write(f"Detalles de Zoom: {zoom_details.get('day')} a las {zoom_details.get('time')}\n")
         upload_to_gcs(gcs_bucket_name, local_file_path, destination_blob_name)
         logger.info(f"Saved client info for {phone} to GCS")
     except Exception as e:
         logger.error(f"Error saving client info for {phone}: {str(e)}")
 
+def save_conversation(phone, conversation_state, gcs_bucket_name, gcs_conversations_path):
+    save_conversation_state(conversation_state, gcs_bucket_name, gcs_conversations_path)
+    save_conversation_history(phone, conversation_state[phone]['history'], gcs_bucket_name, gcs_conversations_path)
+    save_client_info(phone, conversation_state, gcs_bucket_name, gcs_conversations_path)
+
+def notify_gerente(messages, twilio_client, whatsapp_sender_number):
+    for gerente_phone in [bot_config.GERENTE_PHONE]:
+        for msg in messages:
+            try:
+                message = twilio_client.messages.create(
+                    from_=whatsapp_sender_number,
+                    body=msg,
+                    to=gerente_phone
+                )
+                logger.info(f"Notification sent to gerente {gerente_phone}: SID {message.sid}, Status: {message.status}")
+            except Exception as e:
+                logger.error(f"Error sending notification to gerente {gerente_phone}: {str(e)}")
+
 def generate_interested_report(conversation_state):
-    """Generate a detailed report of interested clients with emojis for friendliness."""
-    logger.debug("Generating interested report")
     report = []
     interested_count = 0
     project_counts = {}
     status_counts = {'Interesado': 0, 'Esperando Respuesta': 0, 'No Interesado': 0}
     priority_clients = []
-    non_priority_clients = {}
-    
-    # Initialize project groups
     project_groups = {}
 
-    # Process each client in the conversation state
     for phone, state in conversation_state.items():
-        # Skip the gerente
         if state.get('is_gerente', False):
             continue
 
-        # Increment total interested count (excluding gerente)
         if state.get('no_interest', False):
             status_counts['No Interesado'] += 1
             continue
         interested_count += 1
 
-        # Determine the project of interest
         project = state.get('last_mentioned_project', 'Desconocido')
         project_counts[project] = project_counts.get(project, 0) + 1
 
-        # Initialize project group if not exists
         if project not in project_groups:
             project_groups[project] = []
 
-        # Determine the client's status
         if state.get('pending_question'):
             status = 'Esperando Respuesta'
         elif state.get('no_interest', False):
@@ -197,7 +198,6 @@ def generate_interested_report(conversation_state):
             status = 'Interesado'
         status_counts[status] += 1
 
-        # Gather client details
         client_name = state.get('client_name', 'Desconocido')
         client_budget = state.get('client_budget', 'No especificado')
         last_message = state['history'][-1] if state['history'] else 'Sin mensajes'
@@ -206,16 +206,13 @@ def generate_interested_report(conversation_state):
         time_since_contact = (datetime.now() - last_contact_dt).days
         messages_count = sum(1 for msg in state['history'] if msg.startswith("Cliente:"))
 
-        # Generate a conversation summary
-        history = state.get('history', [])
         summary = "Sin actividad reciente."
-        if history:
-            # Analyze the conversation history
-            if any("Permíteme, déjame revisar esto con el gerente." in msg for msg in history):
+        if state['history']:
+            if any("Permíteme, déjame revisar esto con el gerente." in msg for msg in state['history']):
                 summary = "Cliente con preguntas pendientes 📝."
-            elif any("Gracias por esperar. Sobre tu pregunta:" in msg for msg in history):
+            elif any("Gracias por esperar. Sobre tu pregunta:" in msg for msg in state['history']):
                 summary = "Cliente recibió respuesta del gerente ✅."
-            elif any("¿Cuál es tu nombre?" in msg for msg in history) and not state.get('client_name'):
+            elif any("¿Cuál es tu nombre?" in msg for msg in state['history']) and not state.get('client_name'):
                 summary = "Cliente no ha proporcionado su nombre 🕵️‍♂️."
             else:
                 summary = "Cliente activo, interactuando normalmente 😊."
@@ -234,11 +231,9 @@ def generate_interested_report(conversation_state):
         else:
             project_groups[project].append(client_info)
 
-    # Build the report
     report.append("📊 *Reporte de Interesados* 📊")
     report.append(f"👥 Total de interesados: {interested_count}")
 
-    # Add project breakdown
     report.append("🏢 Por Proyecto:")
     for project, clients in project_groups.items():
         report.append(f"- {project}:")
@@ -247,12 +242,10 @@ def generate_interested_report(conversation_state):
         else:
             report.append("  No hay clientes interesados 😔.")
 
-    # Add priority clients section
     if priority_clients:
         report.append("🌟 Clientes Prioritarios:")
         report.extend(priority_clients)
 
-    # Add status summary
     report.append("📋 Resumen de Estados:")
     for status, count in status_counts.items():
         emoji = '🟢' if status == 'Interesado' else '🟡' if status == 'Esperando Respuesta' else '🔴'
@@ -261,8 +254,6 @@ def generate_interested_report(conversation_state):
     return report
 
 def generate_daily_summary(conversation_state):
-    """Generate a daily summary of activity with emojis for friendliness."""
-    logger.debug("Generating daily activity summary")
     summary = []
     today = datetime.now().date()
     new_clients = 0
@@ -274,13 +265,11 @@ def generate_daily_summary(conversation_state):
         if state.get('is_gerente', False):
             continue
 
-        # Check for new clients (first contact today)
         last_contact = state.get('last_contact', datetime.now().isoformat())
         last_contact_dt = datetime.fromisoformat(last_contact).date()
         if last_contact_dt == today:
             new_clients += 1
 
-        # Check for questions escalated today
         history = state.get('history', [])
         for msg in history:
             if "Permíteme, déjame revisar esto con el gerente." in msg and last_contact_dt == today:
@@ -288,7 +277,6 @@ def generate_daily_summary(conversation_state):
             elif "Gracias por esperar. Sobre tu pregunta:" in msg and last_contact_dt == today:
                 responses_sent += 1
 
-        # Check for disinterested clients
         if state.get('no_interest', False) and last_contact_dt == today:
             disinterested_clients += 1
 
@@ -302,7 +290,6 @@ def generate_daily_summary(conversation_state):
     return summary
 
 def download_projects_from_storage(bucket_name, base_path):
-    """Download project files from Google Cloud Storage."""
     try:
         if not os.path.exists(base_path):
             os.makedirs(base_path)
@@ -322,7 +309,6 @@ def download_projects_from_storage(bucket_name, base_path):
         raise
 
 def extract_text_from_txt(txt_path):
-    """Extract text from .txt files."""
     try:
         with open(txt_path, 'r', encoding='utf-8') as file:
             text = file.read()
@@ -333,7 +319,6 @@ def extract_text_from_txt(txt_path):
         return ""
 
 def load_gerente_respuestas(base_path):
-    """Load gerente responses from respuestas_gerencia.txt in the projects folder."""
     global gerente_respuestas
     gerente_respuestas = {}
     filename = get_gerente_respuestas_filename()
@@ -362,15 +347,12 @@ def load_gerente_respuestas(base_path):
         gerente_respuestas = {}
 
 def save_gerente_respuesta(base_path, question, answer, gcs_bucket_name, project=None):
-    """Save a new gerente response to the appropriate FAQ file and upload to GCS."""
     logger.info("Gerente response saving handled in app.py")
 
 def load_faq_files(base_path):
-    """Load all FAQ files into faq_data at startup."""
     global faq_data
     faq_data = {}
 
-    # Load general_faq.txt
     general_faq_path = os.path.join(base_path, "general_faq.txt")
     if os.path.isfile(general_faq_path):
         faq_data["general"] = {}
@@ -392,7 +374,6 @@ def load_faq_files(base_path):
         logger.info(f"No general_faq.txt found at {general_faq_path}; starting fresh")
         faq_data["general"] = {}
 
-    # Load project-specific FAQ files
     projects = [d for d in os.listdir(base_path) if os.path.isdir(os.path.join(base_path, d)) and not d.startswith('.')]
     for project in projects:
         faq_path = os.path.join(base_path, project, f"{project.lower()}_faq.txt")
@@ -417,22 +398,18 @@ def load_faq_files(base_path):
             faq_data[project.lower()] = {}
 
 def get_faq_answer(question, project=None):
-    """Retrieve an answer from the FAQ data."""
     question = question.lower()
     project_key = project.lower() if project else "general"
     
-    # Check project-specific FAQ first
     if project_key in faq_data and question in faq_data[project_key]:
         return faq_data[project_key][question]
     
-    # Check general FAQ if no project match
     if "general" in faq_data and question in faq_data["general"]:
         return faq_data["general"][question]
     
     return None
 
 def load_projects_from_folder(base_path):
-    """Load project data from project-specific .txt files."""
     global projects_data, downloadable_links, downloadable_urls, downloadable_files
     downloadable_files = {}
 
@@ -466,7 +443,7 @@ def load_projects_from_folder(base_path):
                 projects_data[project] = {
                     'description': text,
                     'type': 'condohotel' if 'condohotel' in text.lower() else 'desconocido',
-                    'location': project_path.split('/')[-1]  # Simplified assumption
+                    'location': project_path.split('/')[-1]
                 }
                 logger.info(f"Proyecto {project} procesado correctamente desde {file_path}.")
                 file_count += 1
@@ -484,7 +461,6 @@ def load_projects_from_folder(base_path):
     return downloadable_files
 
 def send_consecutive_messages(phone, messages, client, whatsapp_sender_number):
-    """Send consecutive messages via Twilio."""
     for msg in messages:
         message = client.messages.create(
             from_=whatsapp_sender_number,
