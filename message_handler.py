@@ -285,23 +285,26 @@ def process_message(incoming_msg, phone, conversation_state, project_info, conve
             if mentioned_project:
                 break
 
-    if not mentioned_project and projects_data:
-        mentioned_project = list(projects_data.keys())[0]
+    # Remove default project selection
+    # Do not assign a default project if none is mentioned or found in history
+    # Let OpenAI prompt handle the initial response with a question about preferences
     logger.debug(f"Determined mentioned_project: {mentioned_project}")
 
     client_name = state.get('client_name', 'Cliente') or 'Cliente'
     logger.debug(f"Using client_name: {client_name}")
 
-    # Prepare the project data for the AI
-    project_data_dict = projects_data.get(mentioned_project, {})
-    if not isinstance(project_data_dict, dict):
-        logger.warning(f"project_data for {mentioned_project} is not a dict: {project_data_dict}")
-        project_data_dict = {}
-    
-    project_data = project_data_dict.get('description', "Información no disponible para este proyecto.")
-    project_data += "\n\nInformación Adicional:\n"
-    project_data += f"Tipo: {project_data_dict.get('type', 'No especificado')}\n"
-    project_data += f"Ubicación: {project_data_dict.get('location', 'No especificada')}\n"
+    # Prepare the project data for the AI, if a project is mentioned
+    project_data = "No hay un proyecto específico seleccionado aún."
+    if mentioned_project:
+        project_data_dict = projects_data.get(mentioned_project, {})
+        if not isinstance(project_data_dict, dict):
+            logger.warning(f"project_data for {mentioned_project} is not a dict: {project_data_dict}")
+            project_data_dict = {}
+        
+        project_data = project_data_dict.get('description', "Información no disponible para este proyecto.")
+        project_data += "\n\nInformación Adicional:\n"
+        project_data += f"Tipo: {project_data_dict.get('type', 'No especificado')}\n"
+        project_data += f"Ubicación: {project_data_dict.get('location', 'No especificada')}\n"
 
     # Detect the intention of the message
     intention_result = detect_intention(incoming_msg_corrected, conversation_history, is_gerente=False)
@@ -359,12 +362,12 @@ def process_message(incoming_msg, phone, conversation_state, project_info, conve
             f"Intención de compra: {client_purchase_intent}\n\n"
             f"Información de los proyectos disponibles:\n"
             f"{project_info}\n\n"
-            f"Datos específicos del proyecto {mentioned_project}:\n"
+            f"Datos específicos del proyecto (si aplica):\n"
             f"{project_data}\n\n"
             f"Historial de conversación:\n"
             f"{conversation_history}\n\n"
             f"Mensaje del cliente: {incoming_msg_corrected}\n\n"
-            f"Responde de forma breve y profesional, enfocándote en el proyecto {mentioned_project}."
+            f"Responde de forma breve y profesional, enfocándote en el proyecto {mentioned_project if mentioned_project else 'ninguno seleccionado aún'}."
         )
         logger.debug(f"Sending request to OpenAI for client message: '{incoming_msg_corrected}', project: {mentioned_project}")
 
@@ -375,7 +378,7 @@ def process_message(incoming_msg, phone, conversation_state, project_info, conve
                     {"role": "system", "content": prompt},
                     {"role": "user", "content": incoming_msg_corrected}
                 ],
-                max_tokens=100,  # Increased from 50 to 100 to allow more complete responses
+                max_tokens=100,
                 temperature=0.3
             )
             reply = response.choices[0].message.content.strip()
@@ -405,6 +408,10 @@ def process_message(incoming_msg, phone, conversation_state, project_info, conve
         zoom_messages = propose_zoom_meeting(client_name)
         state['zoom_proposed'] = True
         messages.extend(zoom_messages)
+
+    # Update the mentioned project in the state if one was detected
+    if mentioned_project:
+        state['last_mentioned_project'] = mentioned_project
 
     logger.debug(f"Final messages: {messages}")
     return messages, mentioned_project, False
