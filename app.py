@@ -80,7 +80,6 @@ if not OPENAI_API_KEY:
 conversation_state = {}
 
 def rephrase_gerente_response(answer, client_name, question):
-    """Use AI to rephrase the gerente's response in a more friendly and natural way."""
     prompt = (
         f"Eres Giselle, una asesora de ventas profesional y amigable de FAV Living. "
         f"Reformula la respuesta del gerente para que sea más cálida y natural, manteniendo la información clave. "
@@ -153,6 +152,8 @@ def generate_detailed_report(conversation_state, filter_stage=None, filter_inter
         project = state.get('last_mentioned_project', 'No especificado')
         budget = state.get('client_budget', 'No especificado')
         needs = state.get('needs', 'No especificadas')
+        usage = state.get('usage', 'No especificado')
+        property_type = state.get('property_type', 'No especificado')
         stage = state.get('stage', 'Prospección')
         interest_level = state.get('interest_level', 0)
         last_contact = state.get('last_contact', 'N/A')
@@ -171,6 +172,8 @@ def generate_detailed_report(conversation_state, filter_stage=None, filter_inter
             f"Proyecto: {project}",
             f"Presupuesto: {budget}",
             f"Necesidades: {needs}",
+            f"Uso: {usage}",
+            f"Tipo de Propiedad: {property_type}",
             f"Etapa: {stage}",
             f"Nivel de Interés: {interest_level}/10",
             f"Último Contacto: {last_contact}",
@@ -274,6 +277,7 @@ def handle_gerente_message(phone, incoming_msg):
 
     incoming_msg_lower = incoming_msg.lower()
 
+    # Handle menu choice if awaiting one
     if conversation_state[phone].get('awaiting_menu_choice', False):
         if incoming_msg in ["1", "2", "3", "4", "5", "6", "7", "8"]:
             menu_commands = {
@@ -298,10 +302,12 @@ def handle_gerente_message(phone, incoming_msg):
             show_gerente_menu(phone)
             return "Opción inválida", 200
 
+    # Show menu if requested
     if "menú" in incoming_msg_lower or "opciones" in incoming_msg_lower:
         show_gerente_menu(phone)
         return "Menú enviado", 200
 
+    # Check for pending question response first
     pending_question = None
     for client_phone, state in conversation_state.items():
         if not state.get('is_gerente', False) and state.get('pending_question'):
@@ -363,14 +369,23 @@ def handle_gerente_message(phone, incoming_msg):
             logger.info(f"Uploaded updated FAQ file to GCS: {faq_file_path}")
 
             os.remove(temp_faq_path)
+
+            project_key = mentioned_project.lower() if mentioned_project else "general"
+            if project_key not in utils.faq_data:
+                utils.faq_data[project_key] = {}
+            utils.faq_data[project_key][question.lower()] = answer
+            logger.debug(f"Updated faq_data[{project_key}]")
+
+            # Save updated conversation state
+            utils.save_conversation(client_phone, conversation_state, GCS_BUCKET_NAME, GCS_CONVERSATIONS_PATH)
+
         except Exception as e:
             logger.error(f"Failed to save FAQ entry to {faq_file_path}: {str(e)}")
-
-        utils.save_conversation(client_phone, conversation_state, GCS_BUCKET_NAME, GCS_CONVERSATIONS_PATH)
 
         utils.send_consecutive_messages(phone, ["Respuesta enviada al cliente. ¿Necesitas algo más?"], client, WHATSAPP_SENDER_NUMBER)
         return "Mensaje enviado", 200
 
+    # Handle gerente commands
     if "reporte" in incoming_msg_lower or "interesados" in incoming_msg_lower:
         logger.info(f"Gerente ({phone}) requested a report of interested clients")
         stage_filter = None
@@ -482,6 +497,9 @@ def handle_gerente_message(phone, incoming_msg):
             client_name = state.get('client_name', 'Desconocido')
             project = state.get('last_mentioned_project', 'No especificado')
             budget = state.get('client_budget', 'No especificado')
+            needs = state.get('needs', 'No especificadas')
+            usage = state.get('usage', 'No especificado')
+            property_type = state.get('property_type', 'No especificado')
             stage = state.get('stage', 'Prospección')
             interest_level = state.get('interest_level', 0)
             last_contact = state.get('last_contact', 'N/A')
@@ -493,6 +511,9 @@ def handle_gerente_message(phone, incoming_msg):
                 f"Nombre: {client_name}",
                 f"Proyecto: {project}",
                 f"Presupuesto: {budget}",
+                f"Necesidades: {needs}",
+                f"Uso: {usage}",
+                f"Tipo de Propiedad: {property_type}",
                 f"Etapa: {stage}",
                 f"Nivel de Interés: {interest_level}/10",
                 f"Último Contacto: {last_contact}",
@@ -561,6 +582,7 @@ def handle_gerente_message(phone, incoming_msg):
             utils.send_consecutive_messages(phone, ["Formato incorrecto. Usa: Añade FAQ para [Proyecto]: Pregunta: [Pregunta] Respuesta: [Respuesta]", "¿En qué más puedo asistirte?"], client, WHATSAPP_SENDER_NUMBER)
             return "Formato incorrecto", 200
 
+    # If no command is recognized, show the menu
     show_gerente_menu(phone)
     return "Mensaje recibido", 200
 
@@ -618,6 +640,10 @@ def handle_client_message(phone, incoming_msg, num_media, media_url=None, profil
                 'preferred_days': None,
                 'client_name': None,
                 'client_budget': None,
+                'needs': None,
+                'usage': None,  # For living, investment, or both
+                'property_type': None,  # Department, commercial, condohotel
+                'preferred_location': None,
                 'last_contact': datetime.now(CST_TIMEZONE).isoformat(),
                 'recontact_attempts': 0,
                 'no_interest': False,
@@ -650,7 +676,6 @@ def handle_client_message(phone, incoming_msg, num_media, media_url=None, profil
 
         # Step 3: Set client name from ProfileName if available
         if profile_name and not state.get('client_name'):
-            # Extract first name from ProfileName
             name_parts = profile_name.strip().split()
             if name_parts:
                 state['client_name'] = name_parts[0].capitalize()
@@ -746,7 +771,7 @@ def handle_client_message(phone, incoming_msg, num_media, media_url=None, profil
             logger.error(f"Error preparing project information: {str(project_info_e)}")
             project_info = "Información de proyectos no disponible."
 
-        # Step 9: Process the message
+        # Step 9: Process the message using message_handler
         logger.debug("Building conversation history")
         conversation_history = "\n".join(state['history'])
 
@@ -898,6 +923,10 @@ def whatsapp():
                     'preferred_days': None,
                     'client_name': None,
                     'client_budget': None,
+                    'needs': None,
+                    'usage': None,
+                    'property_type': None,
+                    'preferred_location': None,
                     'last_contact': datetime.now(CST_TIMEZONE).isoformat(),
                     'recontact_attempts': 0,
                     'no_interest': False,
