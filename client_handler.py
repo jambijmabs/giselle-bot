@@ -82,19 +82,17 @@ def handle_client_message(phone, incoming_msg, num_media, media_url, profile_nam
         logger.debug(f"Updating conversation state for {phone}")
         state = conversation_state[phone]
         state['history'] = history
-        state['history'].append(f"Cliente: {incoming_msg}")
-        state['history'] = state['history'][-10:]
         state['last_contact'] = datetime.now(CST_TIMEZONE).isoformat()
         state['last_response_time'] = datetime.now(CST_TIMEZONE).isoformat()
 
-        # Step 3: Set client name from ProfileName if available
+        # Step 3: Set client name from ProfileName if available (fallback)
         if profile_name and not state.get('client_name'):
             name_parts = profile_name.strip().split()
             if name_parts:
                 state['client_name'] = name_parts[0].capitalize()
                 logger.info(f"Client name set from ProfileName: {state['client_name']}")
             else:
-                state['client_name'] = None
+                state['client_name'] = "Cliente"
 
         # Step 4: Update client stage and interest level
         if any(phrase in incoming_msg.lower() for phrase in ["quiero comprar", "estoy listo", "confirmo"]):
@@ -161,20 +159,7 @@ def handle_client_message(phone, incoming_msg, num_media, media_url, profile_nam
                 utils.save_conversation(phone, conversation_state, bot_config.GCS_BUCKET_NAME, bot_config.GCS_CONVERSATIONS_PATH)
                 return "Waiting for gerente response", 200
 
-        # Step 7: Extract client name if not already set
-        logger.debug(f"Checking if client name needs extraction: client_name={state.get('client_name')}, name_asked={state.get('name_asked', 0)}")
-        if not state.get('client_name') and state.get('name_asked', 0) > 0:
-            name = message_handler.extract_name(incoming_msg, "\n".join(state['history']))
-            logger.debug(f"Extracted name from message '{incoming_msg}': {name}")
-            if name:
-                state['client_name'] = name.capitalize()
-                logger.info(f"Client name extracted from message: {state['client_name']}")
-                state['name_asked'] = state.get('name_asked', 0) + 1
-            else:
-                logger.warning(f"Could not extract name from message: {incoming_msg}")
-                state['name_asked'] = state.get('name_asked', 0) + 1
-
-        # Step 8: Prepare project information
+        # Step 7: Prepare project information
         logger.debug("Preparing project information")
         project_info = ""
         try:
@@ -189,7 +174,7 @@ def handle_client_message(phone, incoming_msg, num_media, media_url, profile_nam
             logger.error(f"Error preparing project information: {str(project_info_e)}", exc_info=True)
             project_info = "Información de proyectos no disponible."
 
-        # Step 9: Process the message
+        # Step 8: Process the message
         logger.debug("Building conversation history")
         conversation_history = "\n".join(state['history'])
 
@@ -235,7 +220,7 @@ def handle_client_message(phone, incoming_msg, num_media, media_url, profile_nam
             state['last_mentioned_project'] = mentioned_project
             logger.debug(f"Updated last_mentioned_project to: {mentioned_project}")
 
-        # Step 10: Send a 24-hour window reminder
+        # Step 9: Send a 24-hour window reminder
         last_incoming = datetime.fromisoformat(state['last_incoming_time']).astimezone(CST_TIMEZONE)
         time_since_last_incoming = (datetime.now(CST_TIMEZONE) - last_incoming).total_seconds() / 3600
         if 20 <= time_since_last_incoming < 24 and not state.get('reminder_sent', False):
@@ -247,19 +232,19 @@ def handle_client_message(phone, incoming_msg, num_media, media_url, profile_nam
             state['history'].extend([f"Giselle: {msg}" for msg in reminder])
             state['reminder_sent'] = True
 
-        # Step 11: Send the generated messages
+        # Step 10: Send the generated messages
         utils.send_consecutive_messages(phone, messages, client, bot_config.WHATSAPP_SENDER_NUMBER)
 
         for msg in messages:
             state['history'].append(f"Giselle: {msg}")
         state['history'] = state['history'][-10:]
 
-        # Step 12: Reset recontact schedule if the client responds
+        # Step 11: Reset recontact schedule if the client responds
         state['schedule_next'] = None
         state['recontact_attempts'] = 0
         state['reminder_sent'] = False
 
-        # Step 13: Save conversation state
+        # Step 12: Save conversation state
         utils.save_conversation(phone, conversation_state, bot_config.GCS_BUCKET_NAME, bot_config.GCS_CONVERSATIONS_PATH)
 
         logger.debug("Returning success response")
