@@ -131,17 +131,19 @@ def is_ready_for_zoom(phone, conversation_state):
     # Check if client has been profiled
     has_name = bool(state.get('client_name'))
     messages_count = sum(1 for msg in state.get('history', []) if msg.startswith("Cliente:"))
-    has_interacted_enough = messages_count >= 2
+    has_interacted_enough = messages_count >= 4  # Increased from 2 to 4 for more natural flow
     
-    # Check if client has shown interest
+    # Check if client has shown significant interest
     intention_history = state.get('intention_history', [])
-    has_shown_interest = any(intent in ["question", "budget", "needs", "purchase_intent", "negotiation"] for intent in intention_history)
+    has_shown_significant_interest = (
+        sum(1 for intent in intention_history if intent in ["question", "budget", "needs", "purchase_intent", "negotiation"]) >= 2
+    )  # Require at least 2 meaningful intents
     
     # Check if Zoom has already been proposed
     zoom_proposed = state.get('zoom_proposed', False)
     
-    ready = has_name and has_interacted_enough and has_shown_interest and not zoom_proposed
-    logger.debug(f"Client {phone} ready for Zoom: {ready}")
+    ready = has_name and has_interacted_enough and has_shown_significant_interest and not zoom_proposed
+    logger.debug(f"Client {phone} ready for Zoom: {ready} (has_name={has_name}, has_interacted_enough={has_interacted_enough}, has_shown_significant_interest={has_shown_significant_interest}, zoom_proposed={zoom_proposed})")
     return ready
 
 def propose_zoom_meeting(client_name):
