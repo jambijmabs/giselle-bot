@@ -1,265 +1,334 @@
+import os
 import logging
-import time
-from datetime import datetime, timedelta
-import pytz
+import sys
+from flask import Flask, request
+from twilio.rest import Client
 import bot_config
 import utils
+import message_handler
+import gerente_handler
+import client_handler
+import report_handler
+import recontact_handler
+import pytz
 
+# Configuration Section
+CST_TIMEZONE = pytz.timezone("America/Mexico_City")
+WHATSAPP_SENDER_NUMBER = bot_config.WHATSAPP_SENDER_NUMBER
+TWILIO_ACCOUNT_SID = os.getenv('TWILIO_ACCOUNT_SID')
+TWILIO_AUTH_TOKEN = os.getenv('TWILIO_AUTH_TOKEN')
+OPENAI_API_KEY = os.getenv('OPENAI_API_KEY')
+GCS_BUCKET_NAME = bot_config.GCS_BUCKET_NAME
+GCS_CONVERSATIONS_PATH = bot_config.GCS_CONVERSATIONS_PATH
+DEFAULT_PORT = 8080
+
+# Configure logging
+logging.basicConfig(
+    level=logging.DEBUG,
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.StreamHandler(sys.stdout),
+        logging.FileHandler('giselle_activity.log')
+    ]
+)
+
+# Initialize Flask app
+app = Flask(__name__)
+
+# Configure logger
 logger = logging.getLogger(__name__)
 
-CST_TIMEZONE = pytz.timezone("America/Mexico_City")
+# Log registered routes after app initialization
+with app.app_context():
+    logger.info("Registered routes:")
+    for rule in app.url_map.iter_rules():
+        logger.info(f"Route: {rule.endpoint} -> {rule}")
 
-def rephrase_gerente_response(answer, client_name, question, message_handler):
-    """Use AI to rephrase the gerente's response in a more friendly and natural way."""
-    prompt = (
-        f"Eres Giselle, una asesora de ventas profesional y amigable de FAV Living. "
-        f"Reformula la respuesta del gerente para que sea más cálida y natural, manteniendo la información clave. "
-        f"La respuesta será enviada a un cliente llamado {client_name}, quien hizo la pregunta: '{question}'. "
-        f"Usa un tono profesional pero cercano, y asegúrate de que el mensaje sea breve.\n\n"
-        f"Respuesta del gerente: {answer}\n\n"
-        f"Reformula la respuesta:"
-    )
+# Initialize Twilio client
+client = None
+try:
+    if not TWILIO_ACCOUNT_SID or not TWILIO_AUTH_TOKEN:
+        logger.warning("TWILIO_ACCOUNT_SID or TWILIO_AUTH_TOKEN not set in environment variables. Twilio client will not be initialized.")
+    else:
+        client = Client(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
+        logger.info("Twilio client initialized successfully")
+except Exception as e:
+    logger.error(f"Failed to initialize Twilio client: {str(e)}")
+    client = None
 
+# Initialize OpenAI client
+if not OPENAI_API_KEY:
+    logger.warning("OPENAI_API_KEY not set in environment variables. Some functionality may not work.")
+
+# Global conversation state
+conversation_state = {}
+
+@app.route('/whatsapp', methods=['POST'])
+def whatsapp():
+    logger.debug("Entered /whatsapp route")
     try:
-        response = message_handler.openai_client.chat.completions.create(
-            model=bot_config.CHATGPT_MODEL,
-            messages=[
-                {"role": "system", "content": prompt},
-                {"role": "user", "content": answer}
-            ],
-            max_tokens=50,
-            temperature=0.3
-        )
-        rephrased = response.choices[0].message.content.strip()
-        return rephrased
-    except Exception as e:
-        logger.error(f"Error rephrasing gerente response with OpenAI: {str(e)}")
-        return f"Gracias por esperar, {client_name}. Sobre tu pregunta: {answer}"
+        if client is None:
+            logger.error("Twilio client not initialized. Cannot process WhatsApp messages.")
+            return "Error: Twilio client not initialized", 500
 
-def determine_best_contact_time(state):
-    if state.get('preferred_time'):
-        return state['preferred_time'], state.get('preferred_days')
+        utils.load_conversation_state(conversation_state, GCS_BUCKET_NAME, bot_config.GCS_CONVERSATIONS_PATH)
+        logger.debug("Conversation state reloaded")
 
-    response_times = []
-    for msg in state.get('history', []):
-        if msg.startswith("Cliente:"):
-            timestamp = state.get('last_response_time', datetime.now(CST_TIMEZONE).isoformat())
-            try:
-                dt = datetime.fromisoformat(timestamp).astimezone(CST_TIMEZONE)
-                response_times.append(dt)
-            except ValueError:
-                continue
+        logger.debug(f"Request headers: {dict(request.headers)}")
+        logger.debug(f"Request form data: {request.form}")
+        logger.debug(f"Request values: {dict(request.values)}")
 
-    if not response_times:
-        return "10:00 AM", None
+        logger.debug("Extracting message content")
+        phone = request.values.get('From', '')
+        incoming_msg = request.values.get('Body', '').strip()
+        num_media = int(request.values.get('NumMedia', '0'))
+        media_url = request.values.get('MediaUrl0', None) if num_media > 0 else None
+        profile_name = request.values.get('ProfileName', None)
 
-    hours = [dt.hour for dt in response_times]
-    if not hours:
-        return "10:00 AM", None
+        logger.debug(f"From phone: {phone}, Message: {incoming_msg}, NumMedia: {num_media}, MediaUrl: {media_url}, ProfileName: {profile_name}")
 
-    most_common_hour = max(set(hours), key=hours.count)
-    period = "AM" if most_common_hour < 12 else "PM"
-    adjusted_hour = most_common_hour if most_common_hour <= 12 else most_common_hour - 12
-    best_time = f"{adjusted_hour}:00 {period}"
+        if not phone:
+            logger.error("No se encontró 'From' en la solicitud")
+            return "Error: Solicitud incompleta", 400
 
-    days = [dt.strftime('%A') for dt in response_times]
-    most_common_day = max(set(days), key=days.count) if days else None
+        normalized_phone = phone.replace("whatsapp:", "").strip()
+        is_gerente = normalized_phone in bot_config.GERENTE_NUMBERS
+        logger.debug(f"Comparando número: phone='{phone}', normalized_phone='{normalized_phone}', GERENTE_NUMBERS={bot_config.GERENTE_NUMBERS}, is_gerente={is_gerente}")
 
-    return best_time, most_common_day
-
-def handle_client_message(phone, incoming_msg, num_media, media_url, profile_name, conversation_state, client, message_handler, utils, recontact_handler):
-    logger.info(f"Handling message from client ({phone})")
-
-    try:
-        # Step 1: Load conversation history
-        logger.debug(f"Loading conversation history for {phone}")
-        history = utils.load_conversation_history(phone, bot_config.GCS_BUCKET_NAME, bot_config.GCS_CONVERSATIONS_PATH)
-        if not isinstance(history, list):
-            logger.warning(f"Conversation history for {phone} is not a list: {history}")
-            history = []
-
-        # Step 2: Update conversation state
-        logger.debug(f"Updating conversation state for {phone}")
-        state = conversation_state[phone]
-        state['history'] = history
-        state['history'].append(f"Cliente: {incoming_msg}")
-        state['history'] = state['history'][-10:]
-        state['last_contact'] = datetime.now(CST_TIMEZONE).isoformat()
-        state['last_response_time'] = datetime.now(CST_TIMEZONE).isoformat()
-
-        # Step 3: Set client name from ProfileName if available
-        if profile_name and not state.get('client_name'):
-            name_parts = profile_name.strip().split()
-            if name_parts:
-                state['client_name'] = name_parts[0].capitalize()
-                logger.info(f"Client name set from ProfileName: {state['client_name']}")
-            else:
-                state['client_name'] = None
-
-        # Step 4: Update client stage and interest level
-        if any(phrase in incoming_msg.lower() for phrase in ["quiero comprar", "estoy listo", "confirmo"]):
-            state['stage'] = 'Cierre'
-            state['interest_level'] = max(state.get('interest_level', 0), 8)
-        elif any(phrase in incoming_msg.lower() for phrase in ["me interesa", "quiero saber más", "detalles"]):
-            state['stage'] = 'Negociación'
-            state['interest_level'] = max(state.get('interest_level', 0), 5)
-        elif any(phrase in incoming_msg.lower() for phrase in ["presupuesto", "necesidades", "qué tienes"]):
-            state['stage'] = 'Calificación'
-            state['interest_level'] = max(state.get('interest_level', 0), 3)
-
-        # Step 5: Notify gerente if client shows high interest
-        if state.get('interest_level', 0) >= 8 or state.get('stage') == 'Cierre':
-            for gerente_phone in [p for p, s in conversation_state.items() if s.get('is_gerente', False)]:
-                utils.send_consecutive_messages(
-                    gerente_phone,
-                    [f"Alerta: Cliente {phone} ({state.get('client_name', 'Desconocido')}) muestra alto interés (Nivel: {state.get('interest_level', 0)}). Etapa: {state.get('stage')}. Último mensaje: {incoming_msg}"],
-                    client,
-                    bot_config.WHATSAPP_SENDER_NUMBER
-                )
-
-        if state.get('priority', False):
-            for gerente_phone in [p for p, s in conversation_state.items() if s.get('is_gerente', False)]:
-                utils.send_consecutive_messages(
-                    gerente_phone,
-                    [f"Cliente prioritario {phone} ha enviado un mensaje: {incoming_msg}"],
-                    client,
-                    bot_config.WHATSAPP_SENDER_NUMBER
-                )
-
-        # Step 6: Handle pending responses from gerente
-        logger.debug(f"Checking for pending responses for {phone}")
-        if state.get('pending_response_time'):
-            current_time = time.time()
-            elapsed_time = current_time - state['pending_response_time']
-            if elapsed_time >= bot_config.FAQ_RESPONSE_DELAY:
-                question = state.get('pending_question', {}).get('question')
-                mentioned_project = state.get('pending_question', {}).get('mentioned_project')
-                if question:
-                    logger.debug(f"Fetching FAQ answer for question '{question}' about project '{mentioned_project}'")
-                    answer = utils.get_faq_answer(question, mentioned_project)
-                    if answer:
-                        client_name = state.get('client_name', 'Cliente') or 'Cliente'
-                        rephrased_answer = rephrase_gerente_response(answer, client_name, question, message_handler)
-                        messages = [rephrased_answer]
-                        utils.send_consecutive_messages(phone, messages, client, bot_config.WHATSAPP_SENDER_NUMBER)
-                        state['history'].append(f"Giselle: {messages[0]}")
-                        state['pending_question'] = None
-                        state['pending_response_time'] = None
-                        logger.debug(f"Sent gerente response to client {phone}: {messages}")
-                    else:
-                        logger.error(f"Could not find answer for question '{question}' in FAQ.")
-                        messages = ["Lo siento, no pude encontrar una respuesta. ¿En qué más puedo ayudarte?"]
-                        utils.send_consecutive_messages(phone, messages, client, bot_config.WHATSAPP_SENDER_NUMBER)
-                        state['history'].append(f"Giselle: {messages[0]}")
-                        state['pending_question'] = None
-                        state['pending_response_time'] = None
-                else:
-                    logger.error(f"No pending question found for {phone} despite pending_response_time.")
-                    state['pending_response_time'] = None
-            else:
-                logger.debug(f"Waiting for FAQ response delay to complete for {phone}. Elapsed time: {elapsed_time} seconds")
-                utils.save_conversation(phone, conversation_state, bot_config.GCS_BUCKET_NAME, bot_config.GCS_CONVERSATIONS_PATH)
-                return "Waiting for gerente response", 200
-
-        # Step 7: Extract client name if not already set
-        if not state.get('client_name') and state.get('name_asked', 0) > 0:
-            name = message_handler.extract_name(incoming_msg, "\n".join(state['history']))
-            if name:
-                state['client_name'] = name.capitalize()
-                logger.info(f"Client name extracted from message: {state['client_name']}")
-                state['name_asked'] = state.get('name_asked', 0) + 1
-
-        # Step 8: Prepare project information
-        logger.debug("Preparing project information")
-        project_info = ""
-        try:
-            if not hasattr(utils, 'projects_data'):
-                logger.error("utils.projects_data is not defined")
-                raise AttributeError("utils.projects_data is not defined")
-            for project, data in utils.projects_data.items():
-                project_info += f"Proyecto: {project}\n"
-                project_info += "Es un desarrollo que creo que te va a interesar.\n"
-                project_info += "\n"
-        except Exception as project_info_e:
-            logger.error(f"Error preparing project information: {str(project_info_e)}")
-            project_info = "Información de proyectos no disponible."
-
-        # Step 9: Process the message
-        logger.debug("Building conversation history")
-        conversation_history = "\n".join(state['history'])
-
-        logger.debug(f"Checking FAQ for an existing answer")
-        mentioned_project = state.get('last_mentioned_project')
-        faq_answer = utils.get_faq_answer(incoming_msg, mentioned_project)
-        if faq_answer:
-            client_name = state.get('client_name', 'Cliente') or 'Cliente'
-            rephrased_answer = rephrase_gerente_response(faq_answer, client_name, incoming_msg, message_handler)
-            messages = [rephrased_answer]
-        else:
-            logger.debug(f"Processing message with message_handler: {incoming_msg}")
-            messages, mentioned_project, needs_gerente = message_handler.process_message(
-                incoming_msg, phone, conversation_state, project_info, conversation_history
-            )
-            logger.debug(f"Messages generated: {messages}")
-            logger.debug(f"Mentioned project after processing: {mentioned_project}")
-            logger.debug(f"Needs gerente contact: {needs_gerente}")
-
-            if needs_gerente:
-                state['pending_question'] = {
-                    'question': incoming_msg,
-                    'mentioned_project': mentioned_project,
-                    'client_phone': phone
+        if is_gerente:
+            logger.info(f"Identificado como gerente: {phone}")
+            if phone not in conversation_state:
+                conversation_state[phone] = {
+                    'history': [],
+                    'is_gerente': True,
+                    'last_contact': datetime.now(CST_TIMEZONE).isoformat(),
+                    'last_incoming_time': datetime.now(CST_TIMEZONE).isoformat(),
+                    'tasks': [],
+                    'last_weekly_report': None,
+                    'awaiting_menu_choice': False
                 }
-                state['pending_response_time'] = time.time()
-                logger.debug(f"Set pending question for {phone}: {state['pending_question']}")
-                for gerente_phone in [p for p, s in conversation_state.items() if s.get('is_gerente', False)]:
-                    utils.send_consecutive_messages(
-                        gerente_phone,
-                        [
-                            f"Nueva pregunta de cliente ({phone}): {incoming_msg}",
-                            f"Contexto: Últimos mensajes - {conversation_history[-1000:]}",
-                            "Por favor, responde con la información solicitada."
-                        ],
-                        client,
-                        bot_config.WHATSAPP_SENDER_NUMBER
+            else:
+                conversation_state[phone]['is_gerente'] = True
+
+            if incoming_msg:
+                return gerente_handler.handle_gerente_message(
+                    phone, incoming_msg, conversation_state, client,
+                    client_handler.rephrase_gerente_response, report_handler.generate_detailed_report,
+                    report_handler.update_leads_excel, utils
+                )
+            elif num_media > 0 and media_url:
+                error_messages, transcribed_msg = message_handler.handle_audio_message(
+                    media_url, phone, TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN
+                )
+                if error_messages:
+                    utils.send_consecutive_messages(phone, error_messages, client, WHATSAPP_SENDER_NUMBER)
+                    return "Error procesando audio", 200
+                if transcribed_msg:
+                    return gerente_handler.handle_gerente_message(
+                        phone, transcribed_msg, conversation_state, client,
+                        client_handler.rephrase_gerente_response, report_handler.generate_detailed_report,
+                        report_handler.update_leads_excel, utils
                     )
             else:
-                logger.debug(f"No gerente contact needed for message: {incoming_msg}")
+                logger.error("Mensaje del gerente sin contenido de texto o audio")
+                return "Error: Mensaje sin contenido", 400
 
-        if mentioned_project:
-            state['last_mentioned_project'] = mentioned_project
-            logger.debug(f"Updated last_mentioned_project to: {mentioned_project}")
+        else:
+            logger.info(f"Identificado como cliente: {phone}")
+            # Load conversation history to check if it exists
+            history = utils.load_conversation_history(phone, GCS_BUCKET_NAME, GCS_CONVERSATIONS_PATH)
+            if not isinstance(history, list):
+                history = []
 
-        # Step 10: Send a 24-hour window reminder
-        last_incoming = datetime.fromisoformat(state['last_incoming_time']).astimezone(CST_TIMEZONE)
-        time_since_last_incoming = (datetime.now(CST_TIMEZONE) - last_incoming).total_seconds() / 3600
-        if 20 <= time_since_last_incoming < 24 and not state.get('reminder_sent', False):
-            reminder = [
-                f"Hola {state.get('client_name', 'Cliente')}, ha pasado un tiempo desde nuestro último mensaje.",
-                "¿Tienes alguna pregunta o quieres más detalles? 😊"
-            ]
-            utils.send_consecutive_messages(phone, reminder, client, bot_config.WHATSAPP_SENDER_NUMBER)
-            state['history'].extend([f"Giselle: {msg}" for msg in reminder])
-            state['reminder_sent'] = True
+            # Initialize or reset client state if there's no history or profile is incomplete
+            if phone not in conversation_state or not history or not is_profile_complete(conversation_state.get(phone, {})):
+                logger.info(f"Initializing or resetting state for client {phone} due to no history or incomplete profile")
+                conversation_state[phone] = {
+                    'history': [],
+                    'name_asked': 0,
+                    'messages_without_response': 0,
+                    'preferred_time': None,
+                    'preferred_days': None,
+                    'client_name': None,
+                    'client_budget': None,
+                    'last_contact': datetime.now(CST_TIMEZONE).isoformat(),
+                    'recontact_attempts': 0,
+                    'no_interest': False,
+                    'schedule_next': None,
+                    'last_incoming_time': datetime.now(CST_TIMEZONE).isoformat(),
+                    'last_response_time': datetime.now(CST_TIMEZONE).isoformat(),
+                    'first_contact': datetime.now(CST_TIMEZONE).isoformat(),
+                    'introduced': False,
+                    'project_info_shared': {},
+                    'last_mentioned_project': None,
+                    'pending_question': None,
+                    'pending_response_time': None,
+                    'is_gerente': False,
+                    'priority': False,
+                    'stage': 'Prospección',
+                    'interest_level': 0,
+                    'reminder_sent': False,
+                    'zoom_proposed': False,
+                    'zoom_scheduled': False,
+                    'zoom_details': {},
+                    'intention_history': [],
+                    'needs_asked': False,
+                    'budget_asked': False,
+                    'contact_time_asked': False,
+                    'purchase_intent_asked': False,
+                    'needs': None,
+                    'purchase_intent': None
+                }
 
-        # Step 11: Send the generated messages
-        utils.send_consecutive_messages(phone, messages, client, bot_config.WHATSAPP_SENDER_NUMBER)
+            state = conversation_state[phone]
 
-        for msg in messages:
-            state['history'].append(f"Giselle: {msg}")
-        state['history'] = state['history'][-10:]
+            # Force profiling if client name is not set
+            if not state.get('client_name') and state.get('name_asked', 0) == 0:
+                state['name_asked'] = 1
+                messages = ["¡Hola! Soy Giselle de FAV Living. 😊 ¿Me podrías decir tu nombre para conocerte mejor?"]
+                utils.send_consecutive_messages(phone, messages, client, WHATSAPP_SENDER_NUMBER)
+                state['history'].append(f"Giselle: {messages[0]}")
+                utils.save_conversation(phone, conversation_state, GCS_BUCKET_NAME, GCS_CONVERSATIONS_PATH)
+                return "Mensaje enviado", 200
 
-        # Step 12: Reset recontact schedule if the client responds
-        state['schedule_next'] = None
-        state['recontact_attempts'] = 0
-        state['reminder_sent'] = False
+            # Force profiling questions if not yet asked
+            if state.get('client_name') and not state.get('needs_asked', False):
+                state['needs_asked'] = True
+                messages = [f"¡Hola {state['client_name']}! Me encantaría ayudarte a encontrar el proyecto perfecto. ¿Estás buscando algo para inversión, para vivir, o tal vez un lugar para vacacionar?"]
+                utils.send_consecutive_messages(phone, messages, client, WHATSAPP_SENDER_NUMBER)
+                state['history'].append(f"Giselle: {messages[0]}")
+                utils.save_conversation(phone, conversation_state, GCS_BUCKET_NAME, GCS_CONVERSATIONS_PATH)
+                return "Mensaje enviado", 200
 
-        # Step 13: Save conversation state
-        utils.save_conversation(phone, conversation_state, bot_config.GCS_BUCKET_NAME, bot_config.GCS_CONVERSATIONS_PATH)
+            if state.get('needs_asked') and not state.get('budget_asked', False):
+                state['budget_asked'] = True
+                messages = [f"Entendido, {state['client_name']}. ¿Cuál sería tu presupuesto aproximado para este proyecto?"]
+                utils.send_consecutive_messages(phone, messages, client, WHATSAPP_SENDER_NUMBER)
+                state['history'].append(f"Giselle: {messages[0]}")
+                utils.save_conversation(phone, conversation_state, GCS_BUCKET_NAME, GCS_CONVERSATIONS_PATH)
+                return "Mensaje enviado", 200
 
-        logger.debug("Returning success response")
-        return "Mensaje enviado", 200
+            if state.get('budget_asked') and not state.get('contact_time_asked', False):
+                state['contact_time_asked'] = True
+                messages = [f"Gracias por compartir eso, {state['client_name']}. ¿En qué horario te vendría mejor que charlemos más a fondo?"]
+                utils.send_consecutive_messages(phone, messages, client, WHATSAPP_SENDER_NUMBER)
+                state['history'].append(f"Giselle: {messages[0]}")
+                utils.save_conversation(phone, conversation_state, GCS_BUCKET_NAME, GCS_CONVERSATIONS_PATH)
+                return "Mensaje enviado", 200
+
+            if state.get('contact_time_asked') and not state.get('purchase_intent_asked', False):
+                state['purchase_intent_asked'] = True
+                messages = [f"Perfecto, {state['client_name']}. Una última pregunta para entenderte mejor: ¿qué tan pronto te gustaría avanzar con este proyecto?"]
+                utils.send_consecutive_messages(phone, messages, client, WHATSAPP_SENDER_NUMBER)
+                state['history'].append(f"Giselle: {messages[0]}")
+                utils.save_conversation(phone, conversation_state, GCS_BUCKET_NAME, GCS_CONVERSATIONS_PATH)
+                return "Mensaje enviado", 200
+
+            if incoming_msg:
+                return client_handler.handle_client_message(
+                    phone, incoming_msg, num_media, media_url, profile_name, conversation_state,
+                    client, message_handler, utils, recontact_handler
+                )
+            elif num_media > 0 and media_url:
+                error_messages, transcribed_msg = message_handler.handle_audio_message(
+                    media_url, phone, TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN
+                )
+                if error_messages:
+                    utils.send_consecutive_messages(phone, error_messages, client, WHATSAPP_SENDER_NUMBER)
+                    return "Error procesando audio", 200
+                if transcribed_msg:
+                    return client_handler.handle_client_message(
+                        phone, transcribed_msg, num_media=0, media_url=None, profile_name=profile_name,
+                        conversation_state=conversation_state, client=client, message_handler=message_handler,
+                        utils=utils, recontact_handler=recontact_handler
+                    )
+            else:
+                logger.error("Mensaje del cliente sin contenido de texto o audio")
+                return "Error: Mensaje sin contenido", 400
 
     except Exception as e:
-        logger.error(f"Error in handle_client_message for {phone}: {str(e)}", exc_info=True)
-        raise
+        logger.error(f"Error inesperado en /whatsapp: {str(e)}", exc_info=True)
+        try:
+            phone = phone.strip()
+            if not phone.startswith('whatsapp:+'):
+                phone = phone.replace('whatsapp:', '').strip()
+                phone = f"whatsapp:+{phone.replace(' ', '')}"
+            logger.debug(f"Phone number in exception handler: {repr(phone)}")
+            if not phone.startswith('whatsapp:+'):
+                logger.error(f"Invalid phone number format in exception handler: {repr(phone)}")
+                return "Error: Invalid phone number format in exception handler", 400
+            message = client.messages.create(
+                from_=WHATSAPP_SENDER_NUMBER,
+                body="Lo siento, ocurrió un error. Por favor, intenta de nuevo o dime cómo puedo ayudarte.",
+                to=phone
+            )
+            logger.info(f"Fallback message sent: SID {message.sid}, Estado: {message.status}")
+            if not conversation_state[phone].get('is_gerente', False):
+                conversation_state[phone]['history'].append("Giselle: Lo siento, ocurrió un error. Por favor, intenta de nuevo o dime cómo puedo ayudarte.")
+                utils.save_conversation(phone, conversation_state, GCS_BUCKET_NAME, GCS_CONVERSATIONS_PATH)
+        except Exception as twilio_e:
+            logger.error(f"Error sending fallback message: {str(twilio_e)}")
+        return "Error interno del servidor", 500
+
+def is_profile_complete(state):
+    """Check if the client's profile is complete."""
+    required_fields = [
+        state.get('client_name'),
+        state.get('needs'),
+        state.get('client_budget'),
+        state.get('preferred_time') or state.get('preferred_days'),
+        state.get('purchase_intent')
+    ]
+    return all(field and field != "No especificado" for field in required_fields)
+
+@app.route('/reset_state', methods=['GET'])
+def reset_state():
+    """Reset the conversation state for all clients."""
+    logger.info("Resetting conversation state for all clients")
+    conversation_state.clear()
+    utils.load_conversation_state(conversation_state, GCS_BUCKET_NAME, bot_config.GCS_CONVERSATIONS_PATH)
+    return "Conversation state reset successfully", 200
+
+@app.route('/', methods=['GET'])
+def root():
+    logger.debug("Solicitud GET recibida en /")
+    return "Servidor Flask está funcionando!"
+
+@app.route('/test', methods=['GET'])
+def test():
+    logger.debug("Solicitud GET recibida en /test")
+    return "Servidor Flask está funcionando correctamente!"
+
+@app.route('/schedule_recontact', methods=['GET'])
+def trigger_recontact():
+    return recontact_handler.trigger_recontact(conversation_state, client, utils, report_handler.generate_detailed_report)
+
+# Application Startup
+if __name__ == '__main__':
+    try:
+        logger.info("Starting application initialization...")
+        utils.load_conversation_state(conversation_state, bot_config.GCS_BUCKET_NAME, bot_config.GCS_BASE_PATH)
+        logger.info("Conversation state loaded")
+        utils.download_projects_from_storage(bot_config.GCS_BUCKET_NAME, bot_config.GCS_BASE_PATH)
+        logger.info("Projects downloaded from storage")
+        utils.load_projects_from_folder(bot_config.GCS_BASE_PATH)
+        logger.info("Projects loaded from folder")
+        utils.load_gerente_respuestas(bot_config.GCS_BASE_PATH)
+        logger.info("Gerente responses loaded")
+        utils.load_faq_files(bot_config.GCS_BASE_PATH)
+        logger.info("FAQ files loaded")
+        message_handler.initialize_message_handler(
+            OPENAI_API_KEY, utils.projects_data, utils.downloadable_urls, TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN
+        )
+        logger.info("Message handler initialized")
+        port = int(os.getenv("PORT", DEFAULT_PORT))
+        service_url = os.getenv("SERVICE_URL", f"https://giselle-bot-250207106980.us-central1.run.app")
+        logger.info(f"Puerto del servidor: {port}")
+        logger.info(f"URL del servicio: {service_url}")
+        logger.info(f"Configura el webhook en Twilio con: {service_url}/whatsapp")
+        logger.info("Iniciando servidor Flask...")
+        app.run(host='0.0.0.0', port=port, debug=False)
+        logger.info(f"Servidor Flask iniciado en el puerto {port}.")
+    except Exception as e:
+        logger.error(f"Failed to start application: {str(e)}")
+        sys.exit(1)
