@@ -11,7 +11,7 @@ import client_handler
 import report_handler
 import recontact_handler
 import pytz
-from datetime import datetime  # Añadido para corregir el NameError
+from datetime import datetime
 
 # Configuration Section
 CST_TIMEZONE = pytz.timezone("America/Mexico_City")
@@ -141,9 +141,9 @@ def whatsapp():
             if not isinstance(history, list):
                 history = []
 
-            # Initialize or reset client state if there's no history or profile is incomplete
-            if phone not in conversation_state or not history or not is_profile_complete(conversation_state.get(phone, {})):
-                logger.info(f"Initializing or resetting state for client {phone} due to no history or incomplete profile")
+            # Initialize client state if it doesn't exist or there's no history
+            if phone not in conversation_state or not history:
+                logger.info(f"Initializing state for client {phone} due to no history or no state")
                 conversation_state[phone] = {
                     'history': [],
                     'name_asked': 0,
