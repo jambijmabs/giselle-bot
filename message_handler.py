@@ -67,11 +67,9 @@ def handle_gerente_response(incoming_msg, phone, conversation_state, gcs_bucket_
             client_phone = client
             logger.debug(f"Found pending question for client {client}: {state['pending_question']}")
             break
-        else:
-            logger.debug(f"No pending question for client {client}: {state.get('pending_question', 'None')}")
 
     if not client_phone or 'pending_question' not in conversation_state.get(client_phone, {}):
-        logger.error(f"No pending question found for gerente response. Client phone: {client_phone}, Conversation state for client: {conversation_state.get(client_phone, {})}")
+        logger.error(f"No pending question found for gerente response. Client phone: {client_phone}")
         return None, None
 
     answer = incoming_msg.strip()
@@ -83,7 +81,6 @@ def handle_gerente_response(incoming_msg, phone, conversation_state, gcs_bucket_
     return client_phone, messages
 
 def correct_typo(text, known_words):
-    """Correct typographical errors by finding the closest match in known_words."""
     text_lower = text.lower()
     matches = difflib.get_close_matches(text_lower, known_words, n=1, cutoff=0.8)
     if matches:
@@ -93,14 +90,11 @@ def correct_typo(text, known_words):
     return text_lower
 
 def extract_name(incoming_msg, conversation_history):
-    """Extract the client's name from their message or history using AI."""
-    logger.debug(f"Extracting name from message: {incoming_msg}")
     prompt = (
         "Eres un asistente que extrae el nombre de una persona de un mensaje o historial de conversación. "
         "El mensaje puede contener frases como 'me llamo', 'mi nombre es', 'soy', o simplemente un nombre propio. "
-        "Tu tarea es identificar y extraer únicamente el nombre propio (sin apellidos ni contexto adicional). "
         "Revisa también el historial para buscar nombres mencionados previamente. "
-        "Si no hay un nombre claro en el mensaje o historial, retorna None. "
+        "Si no hay un nombre claro, retorna None. "
         "Devuelve el nombre en formato de texto plano.\n\n"
         f"Historial de conversación:\n{conversation_history}\n\n"
         f"Mensaje: {incoming_msg}"
@@ -113,8 +107,8 @@ def extract_name(incoming_msg, conversation_history):
                 {"role": "system", "content": prompt},
                 {"role": "user", "content": incoming_msg}
             ],
-            max_tokens=20,  # Reducido para respuestas más cortas
-            temperature=0.3  # Más determinista
+            max_tokens=20,
+            temperature=0.3
         )
         name = response.choices[0].message.content.strip()
         if name.lower() == "none" or not name:
@@ -124,57 +118,7 @@ def extract_name(incoming_msg, conversation_history):
         logger.error(f"Error extracting name with OpenAI: {str(e)}")
         return None
 
-def is_ready_for_zoom(phone, conversation_state):
-    """Determine if the client is ready to schedule a Zoom meeting."""
-    state = conversation_state.get(phone, {})
-    
-    # Check if client has been profiled
-    has_name = bool(state.get('client_name'))
-    messages_count = sum(1 for msg in state.get('history', []) if msg.startswith("Cliente:"))
-    has_interacted_enough = messages_count >= 2
-    
-    # Check if client has shown interest
-    intention_history = state.get('intention_history', [])
-    has_shown_interest = any(intent in ["question", "budget", "needs", "purchase_intent", "negotiation"] for intent in intention_history)
-    
-    # Check if Zoom has already been proposed
-    zoom_proposed = state.get('zoom_proposed', False)
-    
-    ready = has_name and has_interacted_enough and has_shown_interest and not zoom_proposed
-    logger.debug(f"Client {phone} ready for Zoom: {ready}")
-    return ready
-
-def propose_zoom_meeting(client_name):
-    """Generate messages to propose a Zoom meeting with available slots."""
-    slots_text = "\n".join([f"- {slot['day']}: {', '.join(slot['times'])}" for slot in bot_config.ZOOM_AVAILABLE_SLOTS])
-    messages = [msg.format(slots=slots_text, client_name=client_name) for msg in bot_config.ZOOM_PROPOSAL_MESSAGE]
-    return messages
-
-def confirm_zoom_meeting(phone, client_name, day, time, conversation_state):
-    """Confirm a Zoom meeting and notify the gerente."""
-    valid_slot = False
-    for slot in bot_config.ZOOM_AVAILABLE_SLOTS:
-        if slot['day'].lower() == day.lower():
-            if time in slot['times']:
-                valid_slot = True
-                break
-    
-    if not valid_slot:
-        return [f"Lo siento, {client_name}, el horario '{day} a las {time}' no está disponible. Por favor, selecciona otro horario."], False
-
-    messages = [msg.format(client_name=client_name, day=day, time=time) for msg in bot_config.ZOOM_CONFIRMATION_MESSAGE]
-    
-    conversation_state[phone]['zoom_scheduled'] = True
-    conversation_state[phone]['zoom_details'] = {'day': day, 'time': time}
-    
-    notification = [msg.format(client_name=client_name, phone=phone, day=day, time=time) for msg in bot_config.ZOOM_NOTIFICATION_TO_GERENTE]
-    utils.notify_gerente(notification, twilio_client, whatsapp_sender_number)
-    
-    return messages, True
-
 def detect_intention(incoming_msg, conversation_history, is_gerente=False):
-    logger.debug(f"Detecting intention for message: {incoming_msg}")
-    
     role = "gerente" if is_gerente else "cliente"
     prompt = (
         f"Eres un asistente que identifica la intención detrás de un mensaje de un {role}. "
@@ -195,8 +139,8 @@ def detect_intention(incoming_msg, conversation_history, is_gerente=False):
                 {"role": "system", "content": prompt},
                 {"role": "user", "content": incoming_msg}
             ],
-            max_tokens=50,  # Reducido para respuestas más cortas
-            temperature=0.3  # Más determinista
+            max_tokens=50,
+            temperature=0.3
         )
         result = json.loads(response.choices[0].message.content.strip())
         logger.debug(f"Intention detected: {result}")
@@ -206,7 +150,6 @@ def detect_intention(incoming_msg, conversation_history, is_gerente=False):
         return {"intention": "unknown", "data": {}}
 
 def needs_gerente_contact(response, question, project_data, conversation_history):
-    """Determine if the bot needs to contact the gerente for more information."""
     if len(question.strip()) < 3 or question.lower() in ["sí", "si", "no", "hola", "gracias"]:
         logger.debug(f"Question '{question}' is too vague or not a question; not escalating to gerente.")
         return False
@@ -262,7 +205,6 @@ def process_message(incoming_msg, phone, conversation_state, project_info, conve
             break
 
     if not mentioned_project:
-        logger.debug("No project mentioned in message; checking conversation history")
         for msg in conversation_history.split('\n'):
             normalized_hist_msg = msg.lower().replace(" ", "")
             for keyword, project in bot_config.PROJECT_KEYWORD_MAPPING.items():
@@ -300,97 +242,64 @@ def process_message(incoming_msg, phone, conversation_state, project_info, conve
         state['intention_history'] = []
     state['intention_history'].append(intention)
 
-    # Handle Zoom-related intents
-    if intention == "zoom_response":
-        day = intention_data.get('day', '').capitalize()
-        time = intention_data.get('time', '')
-        zoom_messages, confirmed = confirm_zoom_meeting(phone, client_name, day, time, conversation_state)
-        return zoom_messages, mentioned_project, False
+    # Use AI to generate a response following the sales process
+    client_budget = state.get('client_budget', 'No especificado')
+    client_needs = state.get('needs', 'No especificadas')
+    client_purchase_intent = state.get('purchase_intent', 'No especificado')
+    client_usage = state.get('usage', 'No especificado')  # For living, investment, or both
+    client_property_type = state.get('property_type', 'No especificado')  # Department, commercial, condohotel
+    client_location = state.get('preferred_location', 'No especificada')
 
-    if intention == "schedule_zoom":
-        zoom_messages = propose_zoom_meeting(client_name)
-        state['zoom_proposed'] = True
-        return zoom_messages, mentioned_project, False
+    prompt = (
+        f"{bot_config.BOT_PERSONALITY}\n\n"
+        f"Instrucciones para las respuestas:\n{bot_config.RESPONSE_INSTRUCTIONS}\n\n"
+        f"Información del cliente:\n"
+        f"Nombre: {client_name}\n"
+        f"Presupuesto: {client_budget}\n"
+        f"Necesidades: {client_needs}\n"
+        f"Intención de compra: {client_purchase_intent}\n"
+        f"Uso: {client_usage}\n"
+        f"Tipo de propiedad: {client_property_type}\n"
+        f"Ubicación preferida: {client_location}\n\n"
+        f"Información de los proyectos disponibles:\n"
+        f"{project_info}\n\n"
+        f"Datos específicos del proyecto {mentioned_project}:\n"
+        f"{project_data}\n\n"
+        f"Historial de conversación:\n"
+        f"{conversation_history}\n\n"
+        f"Mensaje del cliente: {incoming_msg_corrected}\n\n"
+        f"Responde de forma breve y profesional, enfocándote en el proyecto {mentioned_project} si es relevante, y sigue el proceso de ventas."
+    )
+    logger.debug(f"Sending request to OpenAI for client message: '{incoming_msg_corrected}', project: {mentioned_project}")
 
-    # Handle critical intents
-    if intention == "no_interest":
-        state['no_interest'] = True
-        messages = bot_config.handle_no_interest_response()
-    elif intention == "confirm_sale":
-        if "sí" in incoming_msg_corrected or "si" in incoming_msg_corrected or "confirmo" in incoming_msg_corrected:
-            messages = [
-                f"¡Felicidades, {client_name}! La unidad 2B de MUWAN está apartada para ti.",
-                "Te enviaré los datos bancarios para el depósito."
-            ]
-        else:
-            messages = [f"Entiendo, {client_name}. Tómate tu tiempo para decidir."]
-    elif intention == "confirm_deposit":
-        if "ya envié" in incoming_msg_corrected or "depositado" in incoming_msg_corrected:
-            messages = [
-                f"¡Gracias, {client_name}! Confirmaré la recepción del depósito.",
-                "Estaremos en contacto para los próximos pasos."
-            ]
-        else:
-            messages = [f"Entendido, {client_name}. Avísame cuando hagas el depósito."]
-    else:
-        # Use AI to generate a response
-        client_budget = state.get('client_budget', 'No especificado')
-        client_needs = state.get('needs', 'No especificadas')
-        client_purchase_intent = state.get('purchase_intent', 'No especificado')
-        prompt = (
-            f"{bot_config.BOT_PERSONALITY}\n\n"
-            f"Instrucciones para las respuestas:\n{bot_config.RESPONSE_INSTRUCTIONS}\n\n"
-            f"Información del cliente:\n"
-            f"Presupuesto: {client_budget}\n"
-            f"Necesidades: {client_needs}\n"
-            f"Intención de compra: {client_purchase_intent}\n\n"
-            f"Información de los proyectos disponibles:\n"
-            f"{project_info}\n\n"
-            f"Datos específicos del proyecto {mentioned_project}:\n"
-            f"{project_data}\n\n"
-            f"Historial de conversación:\n"
-            f"{conversation_history}\n\n"
-            f"Mensaje del cliente: {incoming_msg_corrected}\n\n"
-            f"Responde de forma breve y profesional, enfocándote en el proyecto {mentioned_project}."
+    try:
+        response = openai_client.chat.completions.create(
+            model=bot_config.CHATGPT_MODEL,
+            messages=[
+                {"role": "system", "content": prompt},
+                {"role": "user", "content": incoming_msg_corrected}
+            ],
+            max_tokens=50,
+            temperature=0.5  # Aumentado ligeramente para más naturalidad
         )
-        logger.debug(f"Sending request to OpenAI for client message: '{incoming_msg_corrected}', project: {mentioned_project}")
+        reply = response.choices[0].message.content.strip()
+        logger.debug(f"Generated response from OpenAI: {reply}")
 
-        try:
-            response = openai_client.chat.completions.create(
-                model=bot_config.CHATGPT_MODEL,
-                messages=[
-                    {"role": "system", "content": prompt},
-                    {"role": "user", "content": incoming_msg_corrected}
-                ],
-                max_tokens=50,  # Reducido para respuestas más cortas
-                temperature=0.3  # Más determinista
-            )
-            reply = response.choices[0].message.content.strip()
-            logger.debug(f"Generated response from OpenAI: {reply}")
+        messages = [reply]
 
-            # Split the response into messages
-            messages = [reply]
-
-            if not messages or messages == [""]:
-                messages = [f"No tengo esa información, {client_name}, pero puedo revisarlo con el gerente."]
-
-            # Determine if gerente contact is needed
-            if needs_gerente_contact(reply, incoming_msg_corrected, project_data, conversation_history):
-                messages.append(f"No tengo esa información exacta, {client_name}, pero puedo revisarlo con el gerente.")
-                return messages, mentioned_project, True
-
-        except Exception as openai_e:
-            logger.error(f"Fallo con OpenAI API: {str(openai_e)}", exc_info=True)
+        if not messages or messages == [""]:
             messages = [f"No tengo esa información, {client_name}, pero puedo revisarlo con el gerente."]
+
+        # Determine if gerente contact is needed
+        if needs_gerente_contact(reply, incoming_msg_corrected, project_data, conversation_history):
+            messages.append(f"No tengo esa información exacta, {client_name}, pero puedo revisarlo con el gerente.")
             return messages, mentioned_project, True
 
-    # Propose Zoom meeting if the client is ready
-    if is_ready_for_zoom(phone, conversation_state) and not state.get('zoom_scheduled', False):
-        zoom_messages = propose_zoom_meeting(client_name)
-        state['zoom_proposed'] = True
-        messages.extend(zoom_messages)
+    except Exception as openai_e:
+        logger.error(f"Fallo con OpenAI API: {str(openai_e)}", exc_info=True)
+        messages = [f"No tengo esa información, {client_name}, pero puedo revisarlo con el gerente."]
+        return messages, mentioned_project, True
 
-    logger.debug(f"Final messages: {messages}")
     return messages, mentioned_project, False
 
 def handle_audio_message(media_url, phone, twilio_account_sid, twilio_auth_token):
