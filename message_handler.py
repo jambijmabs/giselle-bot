@@ -245,12 +245,12 @@ def needs_gerente_contact(response, question, project_data, conversation_history
 def ensure_question_in_response(messages, client_name):
     """Ensure the response ends with a question to keep the conversation active."""
     if not messages:
-        return [f"¿En qué puedo ayudarte, {client_name}?"]
+        return ["No entendí bien tu mensaje, ¿puedes darme más detalles?"]
 
     last_message = messages[-1]
+    # Remove the generic question addition, as the OpenAI prompt now ensures a relevant question
     if not last_message.endswith('?'):
-        messages.append(f"¿En qué más puedo ayudarte, {client_name}?")
-        logger.debug(f"Added follow-up question to messages: {messages}")
+        logger.warning(f"Response does not end with a question: {last_message}")
     return messages
 
 def process_message(incoming_msg, phone, conversation_state, project_info, conversation_history):
@@ -375,29 +375,29 @@ def process_message(incoming_msg, phone, conversation_state, project_info, conve
                     {"role": "system", "content": prompt},
                     {"role": "user", "content": incoming_msg_corrected}
                 ],
-                max_tokens=50,
+                max_tokens=100,  # Increased from 50 to 100 to allow more complete responses
                 temperature=0.3
             )
             reply = response.choices[0].message.content.strip()
             logger.debug(f"Generated response from OpenAI: {reply}")
 
-            # Split the response into messages
+            # Split the response into messages, but avoid splitting mid-sentence
             messages = [reply]
 
             if not messages or messages == [""]:
-                messages = [f"No tengo esa información, {client_name}, pero puedo revisarlo con el gerente. ¿Te parece bien?"]
+                messages = [f"Entiendo, {client_name}. Voy a consultar eso para ti, ¿te parece bien que te cuente sobre otro proyecto mientras tanto?"]
 
-            # Ensure the response ends with a question
+            # Ensure the response ends with a question (handled by OpenAI prompt now)
             messages = ensure_question_in_response(messages, client_name)
 
             # Determine if gerente contact is needed
             if needs_gerente_contact(reply, incoming_msg_corrected, project_data, conversation_history):
-                messages.append(f"No tengo esa información exacta, {client_name}, pero puedo revisarlo con el gerente. ¿Te parece bien?")
+                messages.append(f"Entiendo, {client_name}. Voy a consultar eso para ti, ¿te parece bien que te cuente sobre otro proyecto mientras tanto?")
                 return messages, mentioned_project, True
 
         except Exception as openai_e:
             logger.error(f"Fallo con OpenAI API: {str(openai_e)}", exc_info=True)
-            messages = [f"No tengo esa información, {client_name}, pero puedo revisarlo con el gerente. ¿Te parece bien?"]
+            messages = [f"Entiendo, {client_name}. Voy a consultar eso para ti, ¿te parece bien que te cuente sobre otro proyecto mientras tanto?"]
             return messages, mentioned_project, True
 
     # Propose Zoom meeting if the client is ready
