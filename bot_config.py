@@ -23,6 +23,30 @@ RESPONSE_INSTRUCTIONS = """
 # Gerente Configuration
 GERENTE_PHONE = "whatsapp:+5218110665094"
 GERENTE_ROLE = "Gerente de Ventas"
+GERENTE_NUMBERS = ["+5218110665094"]
+
+# WhatsApp Configuration
+WHATSAPP_SENDER_NUMBER = "whatsapp:+18188732305"
+
+# GCS Configuration
+GCS_BUCKET_NAME = "giselle-projects"
+GCS_BASE_PATH = "PROYECTOS"
+GCS_CONVERSATIONS_PATH = "CONVERSATIONS"
+
+# Recontact Configuration
+RECONTACT_TEMPLATE_NAME = "follow_up_template"
+RECONTACT_MIN_DAYS = 1
+RECONTACT_HOUR_CST = 18
+RECONTACT_MINUTE_CST = 5
+RECONTACT_TOLERANCE_MINUTES = 5
+
+# Report Configuration
+WEEKLY_REPORT_DAY = "Sunday"
+WEEKLY_REPORT_TIME = "18:00"
+LEADS_EXCEL_PATH = "leads_giselle.xlsx"
+
+# FAQ Configuration
+FAQ_RESPONSE_DELAY = 30
 
 # Phrases indicating lack of interest
 NO_INTEREST_PHRASES = [
