@@ -80,6 +80,7 @@ if not OPENAI_API_KEY:
 conversation_state = {}
 
 def rephrase_gerente_response(answer, client_name, question):
+    """Use AI to rephrase the gerente's response in a more friendly and natural way."""
     prompt = (
         f"Eres Giselle, una asesora de ventas profesional y amigable de FAV Living. "
         f"Reformula la respuesta del gerente para que sea más cálida y natural, manteniendo la información clave. "
@@ -152,8 +153,6 @@ def generate_detailed_report(conversation_state, filter_stage=None, filter_inter
         project = state.get('last_mentioned_project', 'No especificado')
         budget = state.get('client_budget', 'No especificado')
         needs = state.get('needs', 'No especificadas')
-        usage = state.get('usage', 'No especificado')
-        property_type = state.get('property_type', 'No especificado')
         stage = state.get('stage', 'Prospección')
         interest_level = state.get('interest_level', 0)
         last_contact = state.get('last_contact', 'N/A')
@@ -172,8 +171,6 @@ def generate_detailed_report(conversation_state, filter_stage=None, filter_inter
             f"Proyecto: {project}",
             f"Presupuesto: {budget}",
             f"Necesidades: {needs}",
-            f"Uso: {usage}",
-            f"Tipo de Propiedad: {property_type}",
             f"Etapa: {stage}",
             f"Nivel de Interés: {interest_level}/10",
             f"Último Contacto: {last_contact}",
@@ -272,12 +269,30 @@ def show_gerente_menu(phone):
     utils.send_consecutive_messages(phone, menu, client, WHATSAPP_SENDER_NUMBER)
     conversation_state[phone]['awaiting_menu_choice'] = True
 
+def notify_gerente_of_pending_questions(phone):
+    """Notify the gerente of any pending questions."""
+    pending_questions = []
+    for client_phone, state in conversation_state.items():
+        if not state.get('is_gerente', False) and state.get('pending_question'):
+            pending_questions.append({
+                'client_phone': client_phone,
+                'question': state['pending_question']['question']
+            })
+
+    if pending_questions:
+        for question in pending_questions:
+            messages = [msg.format(client_phone=question['client_phone'], question=question['question']) for msg in bot_config.GERENTE_REMINDER_MESSAGE]
+            utils.send_consecutive_messages(phone, messages, client, WHATSAPP_SENDER_NUMBER)
+            logger.info(f"Notified gerente {phone} of pending question from {question['client_phone']}")
+
 def handle_gerente_message(phone, incoming_msg):
     logger.info(f"Handling message from gerente ({phone})")
 
     incoming_msg_lower = incoming_msg.lower()
 
-    # Handle menu choice if awaiting one
+    # Notify gerente of pending questions on every interaction
+    notify_gerente_of_pending_questions(phone)
+
     if conversation_state[phone].get('awaiting_menu_choice', False):
         if incoming_msg in ["1", "2", "3", "4", "5", "6", "7", "8"]:
             menu_commands = {
@@ -302,12 +317,10 @@ def handle_gerente_message(phone, incoming_msg):
             show_gerente_menu(phone)
             return "Opción inválida", 200
 
-    # Show menu if requested
     if "menú" in incoming_msg_lower or "opciones" in incoming_msg_lower:
         show_gerente_menu(phone)
         return "Menú enviado", 200
 
-    # Check for pending question response first
     pending_question = None
     for client_phone, state in conversation_state.items():
         if not state.get('is_gerente', False) and state.get('pending_question'):
@@ -330,6 +343,7 @@ def handle_gerente_message(phone, incoming_msg):
                 client,
                 WHATSAPP_SENDER_NUMBER
             )
+            show_gerente_menu(phone)
             return "Respuesta poco clara", 200
 
         client_name = conversation_state[client_phone].get('client_name', 'Cliente') or 'Cliente'
@@ -369,23 +383,15 @@ def handle_gerente_message(phone, incoming_msg):
             logger.info(f"Uploaded updated FAQ file to GCS: {faq_file_path}")
 
             os.remove(temp_faq_path)
-
-            project_key = mentioned_project.lower() if mentioned_project else "general"
-            if project_key not in utils.faq_data:
-                utils.faq_data[project_key] = {}
-            utils.faq_data[project_key][question.lower()] = answer
-            logger.debug(f"Updated faq_data[{project_key}]")
-
-            # Save updated conversation state
-            utils.save_conversation(client_phone, conversation_state, GCS_BUCKET_NAME, GCS_CONVERSATIONS_PATH)
-
         except Exception as e:
             logger.error(f"Failed to save FAQ entry to {faq_file_path}: {str(e)}")
 
+        utils.save_conversation(client_phone, conversation_state, GCS_BUCKET_NAME, GCS_CONVERSATIONS_PATH)
+
         utils.send_consecutive_messages(phone, ["Respuesta enviada al cliente. ¿Necesitas algo más?"], client, WHATSAPP_SENDER_NUMBER)
+        show_gerente_menu(phone)
         return "Mensaje enviado", 200
 
-    # Handle gerente commands
     if "reporte" in incoming_msg_lower or "interesados" in incoming_msg_lower:
         logger.info(f"Gerente ({phone}) requested a report of interested clients")
         stage_filter = None
@@ -406,6 +412,7 @@ def handle_gerente_message(phone, incoming_msg):
         update_leads_excel(conversation_state)
         
         utils.send_consecutive_messages(phone, ["Reporte enviado y actualizado en leads_giselle.xlsx. ¿Necesitas algo más?"], client, WHATSAPP_SENDER_NUMBER)
+        show_gerente_menu(phone)
         return "Reporte enviado", 200
 
     if "nombres" in incoming_msg_lower or "clientes" in incoming_msg_lower:
@@ -425,6 +432,7 @@ def handle_gerente_message(phone, incoming_msg):
             messages = ["No hay clientes interesados registrados."]
         utils.send_consecutive_messages(phone, messages, client, WHATSAPP_SENDER_NUMBER)
         utils.send_consecutive_messages(phone, ["¿Necesitas algo más?"], client, WHATSAPP_SENDER_NUMBER)
+        show_gerente_menu(phone)
         return "Nombres enviados", 200
 
     if "marca" in incoming_msg_lower and "prioritario" in incoming_msg_lower:
@@ -438,9 +446,11 @@ def handle_gerente_message(phone, incoming_msg):
             conversation_state[client_phone]['priority'] = True
             utils.save_conversation(client_phone, conversation_state, GCS_BUCKET_NAME, GCS_CONVERSATIONS_PATH)
             utils.send_consecutive_messages(phone, [f"Cliente {client_phone} marcado como prioritario.", "¿Necesitas algo más?"], client, WHATSAPP_SENDER_NUMBER)
+            show_gerente_menu(phone)
             return "Cliente marcado como prioritario", 200
         else:
             utils.send_consecutive_messages(phone, ["No encontré al cliente especificado o es un gerente.", "¿En qué más puedo asistirte?"], client, WHATSAPP_SENDER_NUMBER)
+            show_gerente_menu(phone)
             return "Cliente no encontrado", 200
 
     if "resumen del día" in incoming_msg_lower:
@@ -448,6 +458,7 @@ def handle_gerente_message(phone, incoming_msg):
         summary_messages = utils.generate_daily_summary(conversation_state)
         utils.send_consecutive_messages(phone, summary_messages, client, WHATSAPP_SENDER_NUMBER)
         utils.send_consecutive_messages(phone, ["¿Necesitas algo más?"], client, WHATSAPP_SENDER_NUMBER)
+        show_gerente_menu(phone)
         return "Resumen enviado", 200
 
     if "resumen semanal" in incoming_msg_lower:
@@ -455,6 +466,7 @@ def handle_gerente_message(phone, incoming_msg):
         report_messages = generate_detailed_report(conversation_state)
         utils.send_consecutive_messages(phone, report_messages, client, WHATSAPP_SENDER_NUMBER)
         utils.send_consecutive_messages(phone, ["¿Necesitas algo más?"], client, WHATSAPP_SENDER_NUMBER)
+        show_gerente_menu(phone)
         return "Resumen semanal enviado", 200
 
     if "llamar a" in incoming_msg_lower and "mañana" in incoming_msg_lower:
@@ -480,9 +492,11 @@ def handle_gerente_message(phone, incoming_msg):
             conversation_state[phone]['tasks'].append(task)
             utils.save_conversation(phone, conversation_state, GCS_BUCKET_NAME, GCS_CONVERSATIONS_PATH)
             utils.send_consecutive_messages(phone, [f"Tarea asignada: Llamar a {client_phone} mañana a las {time_str}.", "¿Necesitas algo más?"], client, WHATSAPP_SENDER_NUMBER)
+            show_gerente_menu(phone)
             return "Tarea asignada", 200
         else:
             utils.send_consecutive_messages(phone, ["No encontré al cliente especificado o es un gerente.", "¿En qué más puedo asistirte?"], client, WHATSAPP_SENDER_NUMBER)
+            show_gerente_menu(phone)
             return "Cliente no encontrado", 200
 
     if "busca a" in incoming_msg_lower:
@@ -497,9 +511,6 @@ def handle_gerente_message(phone, incoming_msg):
             client_name = state.get('client_name', 'Desconocido')
             project = state.get('last_mentioned_project', 'No especificado')
             budget = state.get('client_budget', 'No especificado')
-            needs = state.get('needs', 'No especificadas')
-            usage = state.get('usage', 'No especificado')
-            property_type = state.get('property_type', 'No especificado')
             stage = state.get('stage', 'Prospección')
             interest_level = state.get('interest_level', 0)
             last_contact = state.get('last_contact', 'N/A')
@@ -511,9 +522,6 @@ def handle_gerente_message(phone, incoming_msg):
                 f"Nombre: {client_name}",
                 f"Proyecto: {project}",
                 f"Presupuesto: {budget}",
-                f"Necesidades: {needs}",
-                f"Uso: {usage}",
-                f"Tipo de Propiedad: {property_type}",
                 f"Etapa: {stage}",
                 f"Nivel de Interés: {interest_level}/10",
                 f"Último Contacto: {last_contact}",
@@ -525,9 +533,11 @@ def handle_gerente_message(phone, incoming_msg):
             messages.extend([f"- {msg}" for msg in last_messages])
             utils.send_consecutive_messages(phone, messages, client, WHATSAPP_SENDER_NUMBER)
             utils.send_consecutive_messages(phone, ["¿Necesitas algo más?"], client, WHATSAPP_SENDER_NUMBER)
+            show_gerente_menu(phone)
             return "Información enviada", 200
         else:
             utils.send_consecutive_messages(phone, ["No encontré al cliente especificado o es un gerente.", "¿En qué más puedo asistirte?"], client, WHATSAPP_SENDER_NUMBER)
+            show_gerente_menu(phone)
             return "Cliente no encontrado", 200
 
     if "añade faq" in incoming_msg_lower or "agrega faq" in incoming_msg_lower:
@@ -574,15 +584,17 @@ def handle_gerente_message(phone, incoming_msg):
             except Exception as e:
                 logger.error(f"Failed to save FAQ entry to {faq_file_path}: {str(e)}")
                 utils.send_consecutive_messages(phone, ["Ocurrió un error al guardar la FAQ.", "¿En qué más puedo asistirte?"], client, WHATSAPP_SENDER_NUMBER)
+                show_gerente_menu(phone)
                 return "Error al guardar FAQ", 500
 
             utils.send_consecutive_messages(phone, [f"FAQ añadida para {project}: {question}.", "¿Necesitas algo más?"], client, WHATSAPP_SENDER_NUMBER)
+            show_gerente_menu(phone)
             return "FAQ añadida", 200
         else:
             utils.send_consecutive_messages(phone, ["Formato incorrecto. Usa: Añade FAQ para [Proyecto]: Pregunta: [Pregunta] Respuesta: [Respuesta]", "¿En qué más puedo asistirte?"], client, WHATSAPP_SENDER_NUMBER)
+            show_gerente_menu(phone)
             return "Formato incorrecto", 200
 
-    # If no command is recognized, show the menu
     show_gerente_menu(phone)
     return "Mensaje recibido", 200
 
@@ -640,10 +652,6 @@ def handle_client_message(phone, incoming_msg, num_media, media_url=None, profil
                 'preferred_days': None,
                 'client_name': None,
                 'client_budget': None,
-                'needs': None,
-                'usage': None,  # For living, investment, or both
-                'property_type': None,  # Department, commercial, condohotel
-                'preferred_location': None,
                 'last_contact': datetime.now(CST_TIMEZONE).isoformat(),
                 'recontact_attempts': 0,
                 'no_interest': False,
@@ -676,6 +684,7 @@ def handle_client_message(phone, incoming_msg, num_media, media_url=None, profil
 
         # Step 3: Set client name from ProfileName if available
         if profile_name and not state.get('client_name'):
+            # Extract first name from ProfileName
             name_parts = profile_name.strip().split()
             if name_parts:
                 state['client_name'] = name_parts[0].capitalize()
@@ -771,7 +780,7 @@ def handle_client_message(phone, incoming_msg, num_media, media_url=None, profil
             logger.error(f"Error preparing project information: {str(project_info_e)}")
             project_info = "Información de proyectos no disponible."
 
-        # Step 9: Process the message using message_handler
+        # Step 9: Process the message
         logger.debug("Building conversation history")
         conversation_history = "\n".join(state['history'])
 
@@ -797,6 +806,7 @@ def handle_client_message(phone, incoming_msg, num_media, media_url=None, profil
                     'mentioned_project': mentioned_project,
                     'client_phone': phone
                 }
+                state['pending_response_time'] = time.time()
                 logger.debug(f"Set pending question for {phone}: {state['pending_question']}")
                 for gerente_phone in [p for p, s in conversation_state.items() if s.get('is_gerente', False)]:
                     utils.send_consecutive_messages(
@@ -923,10 +933,6 @@ def whatsapp():
                     'preferred_days': None,
                     'client_name': None,
                     'client_budget': None,
-                    'needs': None,
-                    'usage': None,
-                    'property_type': None,
-                    'preferred_location': None,
                     'last_contact': datetime.now(CST_TIMEZONE).isoformat(),
                     'recontact_attempts': 0,
                     'no_interest': False,
