@@ -34,6 +34,7 @@ RECONTACT_TEMPLATE_NAME = "follow_up_template"
 RECONTACT_MIN_DAYS = 1
 RECONTACT_HOUR_CST = 18
 RECONTACT_MINUTE_CST = 5
+RECONTACT_TOLERANCE_MINUTES = 5
 LEADS_EXCEL_PATH = "leads_giselle.xlsx"
 CST_TIMEZONE = pytz.timezone("America/Mexico_City")
 
@@ -82,9 +83,9 @@ def rephrase_gerente_response(answer, client_name, question):
     """Use AI to rephrase the gerente's response in a more friendly and natural way."""
     prompt = (
         f"Eres Giselle, una asesora de ventas profesional y amigable de FAV Living. "
-        f"Tu tarea es reformular la respuesta del gerente para que sea más cálida y natural, manteniendo la información clave. "
+        f"Reformula la respuesta del gerente para que sea más cálida y natural, manteniendo la información clave. "
         f"La respuesta será enviada a un cliente llamado {client_name}, quien hizo la pregunta: '{question}'. "
-        f"Usa un tono profesional pero cercano, y asegúrate de que el mensaje sea breve y claro.\n\n"
+        f"Usa un tono profesional pero cercano, y asegúrate de que el mensaje sea breve.\n\n"
         f"Respuesta del gerente: {answer}\n\n"
         f"Reformula la respuesta:"
     )
@@ -96,8 +97,8 @@ def rephrase_gerente_response(answer, client_name, question):
                 {"role": "system", "content": prompt},
                 {"role": "user", "content": answer}
             ],
-            max_tokens=100,
-            temperature=0.7
+            max_tokens=50,
+            temperature=0.3
         )
         rephrased = response.choices[0].message.content.strip()
         return rephrased
@@ -106,7 +107,6 @@ def rephrase_gerente_response(answer, client_name, question):
         return f"Gracias por esperar, {client_name}. Sobre tu pregunta: {answer}"
 
 def check_whatsapp_window(phone):
-    """Check if the client is within the 24-hour messaging window."""
     if client is None:
         logger.error("Twilio client not initialized, cannot check WhatsApp window.")
         return False
@@ -127,7 +127,6 @@ def check_whatsapp_window(phone):
         return False
 
 def send_template_message(phone, client_name, project):
-    """Send a pre-approved WhatsApp template message to recontact the client."""
     try:
         message = client.messages.create(
             from_=WHATSAPP_SENDER_NUMBER,
@@ -145,12 +144,9 @@ def send_template_message(phone, client_name, project):
         return False
 
 def generate_detailed_report(conversation_state, filter_stage=None, filter_interest=None):
-    """Generate a detailed report for the gerente with client stages and interest levels."""
     report = ["Reporte Detallado de Clientes Interesados:"]
     for client_phone, state in conversation_state.items():
-        if state.get('is_gerente', False):
-            continue
-        if state.get('no_interest', False):
+        if state.get('is_gerente', False) or state.get('no_interest', False):
             continue
 
         client_name = state.get('client_name', 'Desconocido')
@@ -161,6 +157,8 @@ def generate_detailed_report(conversation_state, filter_stage=None, filter_inter
         interest_level = state.get('interest_level', 0)
         last_contact = state.get('last_contact', 'N/A')
         last_messages = state.get('history', [])[-3:] if state.get('history') else ['Sin mensajes']
+        zoom_scheduled = state.get('zoom_scheduled', False)
+        zoom_details = state.get('zoom_details', {})
 
         if filter_stage and stage != filter_stage:
             continue
@@ -176,8 +174,11 @@ def generate_detailed_report(conversation_state, filter_stage=None, filter_inter
             f"Etapa: {stage}",
             f"Nivel de Interés: {interest_level}/10",
             f"Último Contacto: {last_contact}",
-            "Últimos Mensajes:"
+            f"Reunión Zoom Agendada: {'Sí' if zoom_scheduled else 'No'}"
         ]
+        if zoom_scheduled and zoom_details:
+            client_info.append(f"Detalles de Zoom: {zoom_details.get('day')} a las {zoom_details.get('time')}")
+        client_info.append("Últimos Mensajes:")
         client_info.extend([f"- {msg}" for msg in last_messages])
         report.extend(client_info)
         report.append("---")
@@ -187,13 +188,11 @@ def generate_detailed_report(conversation_state, filter_stage=None, filter_inter
     return report
 
 def update_leads_excel(conversation_state):
-    """Update the leads_giselle.xlsx file in Google Cloud Storage with client data."""
     try:
         storage_client = storage.Client()
         bucket = storage_client.bucket(GCS_BUCKET_NAME)
         blob = bucket.blob(LEADS_EXCEL_PATH)
 
-        # Download existing Excel file or create a new one
         temp_excel_path = f"/tmp/{LEADS_EXCEL_PATH}"
         try:
             blob.download_to_filename(temp_excel_path)
@@ -203,32 +202,29 @@ def update_leads_excel(conversation_state):
             df = pd.DataFrame(columns=[
                 "FECHA DE INGRESO", "NOMBRE", "TELEFONO", "CORREO",
                 "PROYECTO DE INTERES", "FECHA DE ULTIMO CONTACTO",
-                "NIVEL DE INTERES", "ESTATUS"
+                "NIVEL DE INTERES", "ESTATUS", "ZOOM AGENDADA", "DETALLES ZOOM"
             ])
 
-        # Prepare new data
         new_rows = []
         for client_phone, state in conversation_state.items():
-            if state.get('is_gerente', False):
+            if state.get('is_gerente', False) or state.get('no_interest', False):
                 continue
 
-            # Skip if client has no interest
-            if state.get('no_interest', False):
-                continue
-
-            # Prepare row data
             client_name = state.get('client_name', 'Desconocido')
             project = state.get('last_mentioned_project', 'No especificado')
             last_contact = state.get('last_contact', 'N/A')
             interest_level = state.get('interest_level', 0)
             stage = state.get('stage', 'Prospección')
             first_contact = state.get('first_contact', last_contact)
+            zoom_scheduled = state.get('zoom_scheduled', False)
+            zoom_details = state.get('zoom_details', {})
+            zoom_details_text = f"{zoom_details.get('day')} a las {zoom_details.get('time')}" if zoom_scheduled and zoom_details else "N/A"
 
-            # Check if client already exists in the Excel file
             if client_phone in df['TELEFONO'].values:
                 df.loc[df['TELEFONO'] == client_phone, [
-                    "FECHA DE ULTIMO CONTACTO", "NIVEL DE INTERES", "ESTATUS", "PROYECTO DE INTERES"
-                ]] = [last_contact, interest_level, stage, project]
+                    "FECHA DE ULTIMO CONTACTO", "NIVEL DE INTERES", "ESTATUS", "PROYECTO DE INTERES",
+                    "ZOOM AGENDADA", "DETALLES ZOOM"
+                ]] = [last_contact, interest_level, stage, project, "Sí" if zoom_scheduled else "No", zoom_details_text]
             else:
                 new_row = {
                     "FECHA DE INGRESO": first_contact,
@@ -238,28 +234,26 @@ def update_leads_excel(conversation_state):
                     "PROYECTO DE INTERES": project,
                     "FECHA DE ULTIMO CONTACTO": last_contact,
                     "NIVEL DE INTERES": interest_level,
-                    "ESTATUS": stage
+                    "ESTATUS": stage,
+                    "ZOOM AGENDADA": "Sí" if zoom_scheduled else "No",
+                    "DETALLES ZOOM": zoom_details_text
                 }
                 new_rows.append(new_row)
 
-        # Append new rows if any
         if new_rows:
             new_df = pd.DataFrame(new_rows)
             df = pd.concat([df, new_df], ignore_index=True)
 
-        # Save updated Excel file
         df.to_excel(temp_excel_path, index=False)
         blob.upload_from_filename(temp_excel_path)
         logger.info(f"Updated leads Excel file at {LEADS_EXCEL_PATH}")
 
-        # Clean up
         os.remove(temp_excel_path)
 
     except Exception as e:
         logger.error(f"Failed to update leads Excel file: {str(e)}")
 
 def show_gerente_menu(phone):
-    """Send a numbered menu of options to the gerente."""
     menu = [
         "Hola, ¿cómo puedo ayudarte hoy? Por favor, selecciona una opción:",
         "1️⃣ Ver reporte de clientes interesados (puedes filtrar por etapa o interés)",
@@ -280,10 +274,8 @@ def handle_gerente_message(phone, incoming_msg):
 
     incoming_msg_lower = incoming_msg.lower()
 
-    # Check if the gerente is responding to a menu choice
     if conversation_state[phone].get('awaiting_menu_choice', False):
         if incoming_msg in ["1", "2", "3", "4", "5", "6", "7", "8"]:
-            # Map menu choice to corresponding command
             menu_commands = {
                 "1": "reporte",
                 "2": "nombres",
@@ -306,12 +298,10 @@ def handle_gerente_message(phone, incoming_msg):
             show_gerente_menu(phone)
             return "Opción inválida", 200
 
-    # Show menu if requested
     if "menú" in incoming_msg_lower or "opciones" in incoming_msg_lower:
         show_gerente_menu(phone)
         return "Menú enviado", 200
 
-    # Handle pending question response
     pending_question = None
     for client_phone, state in conversation_state.items():
         if not state.get('is_gerente', False) and state.get('pending_question'):
@@ -330,7 +320,7 @@ def handle_gerente_message(phone, incoming_msg):
             logger.warning(f"Gerente response '{answer}' seems irrelevant for question '{question}'")
             utils.send_consecutive_messages(
                 phone,
-                ["Tu respuesta parece poco clara. Podrías proporcionar más detalles?"],
+                ["Tu respuesta parece poco clara. ¿Podrías dar más detalles?"],
                 client,
                 WHATSAPP_SENDER_NUMBER
             )
@@ -376,14 +366,11 @@ def handle_gerente_message(phone, incoming_msg):
         except Exception as e:
             logger.error(f"Failed to save FAQ entry to {faq_file_path}: {str(e)}")
 
-        utils.save_conversation_state(conversation_state, GCS_BUCKET_NAME, GCS_CONVERSATIONS_PATH)
-        utils.save_conversation_history(client_phone, conversation_state[client_phone]['history'], GCS_BUCKET_NAME, GCS_CONVERSATIONS_PATH)
-        utils.save_client_info(client_phone, conversation_state, GCS_BUCKET_NAME, GCS_CONVERSATIONS_PATH)
+        utils.save_conversation(client_phone, conversation_state, GCS_BUCKET_NAME, GCS_CONVERSATIONS_PATH)
 
-        utils.send_consecutive_messages(phone, ["Respuesta enviada al cliente. Necesitas algo más?"], client, WHATSAPP_SENDER_NUMBER)
+        utils.send_consecutive_messages(phone, ["Respuesta enviada al cliente. ¿Necesitas algo más?"], client, WHATSAPP_SENDER_NUMBER)
         return "Mensaje enviado", 200
 
-    # Handle gerente commands
     if "reporte" in incoming_msg_lower or "interesados" in incoming_msg_lower:
         logger.info(f"Gerente ({phone}) requested a report of interested clients")
         stage_filter = None
@@ -401,7 +388,6 @@ def handle_gerente_message(phone, incoming_msg):
         utils.send_consecutive_messages(phone, report_messages, client, WHATSAPP_SENDER_NUMBER)
         logger.debug(f"Sent report to gerente: {report_messages}")
         
-        # Update the Excel file with the latest client data
         update_leads_excel(conversation_state)
         
         utils.send_consecutive_messages(phone, ["Reporte enviado y actualizado en leads_giselle.xlsx. ¿Necesitas algo más?"], client, WHATSAPP_SENDER_NUMBER)
@@ -417,11 +403,11 @@ def handle_gerente_message(phone, incoming_msg):
 
         if interested_clients:
             messages = [
-                "Estos son los nombres de los clientes interesados:",
+                "Nombres de clientes interesados:",
                 ", ".join(interested_clients)
             ]
         else:
-            messages = ["No hay clientes interesados registrados en este momento."]
+            messages = ["No hay clientes interesados registrados."]
         utils.send_consecutive_messages(phone, messages, client, WHATSAPP_SENDER_NUMBER)
         utils.send_consecutive_messages(phone, ["¿Necesitas algo más?"], client, WHATSAPP_SENDER_NUMBER)
         return "Nombres enviados", 200
@@ -435,7 +421,7 @@ def handle_gerente_message(phone, incoming_msg):
                 break
         if client_phone and not conversation_state[client_phone].get('is_gerente', False):
             conversation_state[client_phone]['priority'] = True
-            utils.save_conversation_state(conversation_state, GCS_BUCKET_NAME, GCS_CONVERSATIONS_PATH)
+            utils.save_conversation(client_phone, conversation_state, GCS_BUCKET_NAME, GCS_CONVERSATIONS_PATH)
             utils.send_consecutive_messages(phone, [f"Cliente {client_phone} marcado como prioritario.", "¿Necesitas algo más?"], client, WHATSAPP_SENDER_NUMBER)
             return "Cliente marcado como prioritario", 200
         else:
@@ -477,7 +463,7 @@ def handle_gerente_message(phone, incoming_msg):
             if 'tasks' not in conversation_state[phone]:
                 conversation_state[phone]['tasks'] = []
             conversation_state[phone]['tasks'].append(task)
-            utils.save_conversation_state(conversation_state, GCS_BUCKET_NAME, GCS_CONVERSATIONS_PATH)
+            utils.save_conversation(phone, conversation_state, GCS_BUCKET_NAME, GCS_CONVERSATIONS_PATH)
             utils.send_consecutive_messages(phone, [f"Tarea asignada: Llamar a {client_phone} mañana a las {time_str}.", "¿Necesitas algo más?"], client, WHATSAPP_SENDER_NUMBER)
             return "Tarea asignada", 200
         else:
@@ -500,6 +486,8 @@ def handle_gerente_message(phone, incoming_msg):
             interest_level = state.get('interest_level', 0)
             last_contact = state.get('last_contact', 'N/A')
             last_messages = state.get('history', [])[-3:] if state.get('history') else ['Sin mensajes']
+            zoom_scheduled = state.get('zoom_scheduled', False)
+            zoom_details = state.get('zoom_details', {})
             messages = [
                 f"Información del Cliente {client_phone}",
                 f"Nombre: {client_name}",
@@ -508,8 +496,11 @@ def handle_gerente_message(phone, incoming_msg):
                 f"Etapa: {stage}",
                 f"Nivel de Interés: {interest_level}/10",
                 f"Último Contacto: {last_contact}",
-                "Últimos Mensajes:"
+                f"Reunión Zoom Agendada: {'Sí' if zoom_scheduled else 'No'}"
             ]
+            if zoom_scheduled and zoom_details:
+                messages.append(f"Detalles de Zoom: {zoom_details.get('day')} a las {zoom_details.get('time')}")
+            messages.append("Últimos Mensajes:")
             messages.extend([f"- {msg}" for msg in last_messages])
             utils.send_consecutive_messages(phone, messages, client, WHATSAPP_SENDER_NUMBER)
             utils.send_consecutive_messages(phone, ["¿Necesitas algo más?"], client, WHATSAPP_SENDER_NUMBER)
@@ -570,12 +561,10 @@ def handle_gerente_message(phone, incoming_msg):
             utils.send_consecutive_messages(phone, ["Formato incorrecto. Usa: Añade FAQ para [Proyecto]: Pregunta: [Pregunta] Respuesta: [Respuesta]", "¿En qué más puedo asistirte?"], client, WHATSAPP_SENDER_NUMBER)
             return "Formato incorrecto", 200
 
-    # If no command is recognized, show the menu
     show_gerente_menu(phone)
     return "Mensaje recibido", 200
 
 def determine_best_contact_time(state):
-    """Determine the best time to recontact a client based on their response patterns."""
     if state.get('preferred_time'):
         return state['preferred_time'], state.get('preferred_days')
 
@@ -606,20 +595,18 @@ def determine_best_contact_time(state):
 
     return best_time, most_common_day
 
-def handle_client_message(phone, incoming_msg, num_media, media_url=None):
+def handle_client_message(phone, incoming_msg, num_media, media_url=None, profile_name=None):
     logger.info(f"Handling message from client ({phone})")
 
     try:
+        # Step 1: Load conversation history
         logger.debug(f"Loading conversation history for {phone}")
-        try:
-            history = utils.load_conversation_history(phone, GCS_BUCKET_NAME, GCS_CONVERSATIONS_PATH)
-            if not isinstance(history, list):
-                logger.warning(f"Conversation history for {phone} is not a list: {history}")
-                history = []
-        except Exception as e:
-            logger.error(f"Failed to load conversation history for {phone}: {str(e)}")
+        history = utils.load_conversation_history(phone, GCS_BUCKET_NAME, GCS_CONVERSATIONS_PATH)
+        if not isinstance(history, list):
+            logger.warning(f"Conversation history for {phone} is not a list: {history}")
             history = []
 
+        # Step 2: Initialize or update conversation state
         logger.debug(f"Updating conversation state for {phone}")
         if phone not in conversation_state:
             logger.warning(f"Client {phone} not found in conversation_state, initializing")
@@ -647,35 +634,52 @@ def handle_client_message(phone, incoming_msg, num_media, media_url=None):
                 'priority': False,
                 'stage': 'Prospección',
                 'interest_level': 0,
-                'reminder_sent': False
+                'reminder_sent': False,
+                'zoom_proposed': False,
+                'zoom_scheduled': False,
+                'zoom_details': {},
+                'intention_history': []
             }
 
-        conversation_state[phone]['history'] = history
-        conversation_state[phone]['history'].append(f"Cliente: {incoming_msg}")
-        conversation_state[phone]['history'] = conversation_state[phone]['history'][-10:]
-        conversation_state[phone]['last_contact'] = datetime.now(CST_TIMEZONE).isoformat()
-        conversation_state[phone]['last_response_time'] = datetime.now(CST_TIMEZONE).isoformat()
+        state = conversation_state[phone]
+        state['history'] = history
+        state['history'].append(f"Cliente: {incoming_msg}")
+        state['history'] = state['history'][-10:]
+        state['last_contact'] = datetime.now(CST_TIMEZONE).isoformat()
+        state['last_response_time'] = datetime.now(CST_TIMEZONE).isoformat()
 
+        # Step 3: Set client name from ProfileName if available
+        if profile_name and not state.get('client_name'):
+            # Extract first name from ProfileName
+            name_parts = profile_name.strip().split()
+            if name_parts:
+                state['client_name'] = name_parts[0].capitalize()
+                logger.info(f"Client name set from ProfileName: {state['client_name']}")
+            else:
+                state['client_name'] = None
+
+        # Step 4: Update client stage and interest level
         if any(phrase in incoming_msg.lower() for phrase in ["quiero comprar", "estoy listo", "confirmo"]):
-            conversation_state[phone]['stage'] = 'Cierre'
-            conversation_state[phone]['interest_level'] = max(conversation_state[phone].get('interest_level', 0), 8)
+            state['stage'] = 'Cierre'
+            state['interest_level'] = max(state.get('interest_level', 0), 8)
         elif any(phrase in incoming_msg.lower() for phrase in ["me interesa", "quiero saber más", "detalles"]):
-            conversation_state[phone]['stage'] = 'Negociación'
-            conversation_state[phone]['interest_level'] = max(conversation_state[phone].get('interest_level', 0), 5)
+            state['stage'] = 'Negociación'
+            state['interest_level'] = max(state.get('interest_level', 0), 5)
         elif any(phrase in incoming_msg.lower() for phrase in ["presupuesto", "necesidades", "qué tienes"]):
-            conversation_state[phone]['stage'] = 'Calificación'
-            conversation_state[phone]['interest_level'] = max(conversation_state[phone].get('interest_level', 0), 3)
+            state['stage'] = 'Calificación'
+            state['interest_level'] = max(state.get('interest_level', 0), 3)
 
-        if conversation_state[phone].get('interest_level', 0) >= 8 or conversation_state[phone].get('stage') == 'Cierre':
+        # Step 5: Notify gerente if client shows high interest
+        if state.get('interest_level', 0) >= 8 or state.get('stage') == 'Cierre':
             for gerente_phone in [p for p, s in conversation_state.items() if s.get('is_gerente', False)]:
                 utils.send_consecutive_messages(
                     gerente_phone,
-                    [f"Alerta: Cliente {phone} ({conversation_state[phone].get('client_name', 'Desconocido')}) muestra alto interés (Nivel: {conversation_state[phone].get('interest_level', 0)}). Etapa: {conversation_state[phone].get('stage')}. Último mensaje: {incoming_msg}"],
+                    [f"Alerta: Cliente {phone} ({state.get('client_name', 'Desconocido')}) muestra alto interés (Nivel: {state.get('interest_level', 0)}). Etapa: {state.get('stage')}. Último mensaje: {incoming_msg}"],
                     client,
                     WHATSAPP_SENDER_NUMBER
                 )
 
-        if conversation_state[phone].get('priority', False):
+        if state.get('priority', False):
             for gerente_phone in [p for p, s in conversation_state.items() if s.get('is_gerente', False)]:
                 utils.send_consecutive_messages(
                     gerente_phone,
@@ -684,50 +688,50 @@ def handle_client_message(phone, incoming_msg, num_media, media_url=None):
                     WHATSAPP_SENDER_NUMBER
                 )
 
+        # Step 6: Handle pending responses from gerente
         logger.debug(f"Checking for pending responses for {phone}")
-        if conversation_state[phone].get('pending_response_time'):
+        if state.get('pending_response_time'):
             current_time = time.time()
-            elapsed_time = current_time - conversation_state[phone]['pending_response_time']
+            elapsed_time = current_time - state['pending_response_time']
             if elapsed_time >= FAQ_RESPONSE_DELAY:
-                question = conversation_state[phone].get('pending_question', {}).get('question')
-                mentioned_project = conversation_state[phone].get('pending_question', {}).get('mentioned_project')
+                question = state.get('pending_question', {}).get('question')
+                mentioned_project = state.get('pending_question', {}).get('mentioned_project')
                 if question:
                     logger.debug(f"Fetching FAQ answer for question '{question}' about project '{mentioned_project}'")
                     answer = utils.get_faq_answer(question, mentioned_project)
                     if answer:
-                        client_name = conversation_state[phone].get('client_name', 'Cliente') or 'Cliente'
+                        client_name = state.get('client_name', 'Cliente') or 'Cliente'
                         rephrased_answer = rephrase_gerente_response(answer, client_name, question)
                         messages = [rephrased_answer]
                         utils.send_consecutive_messages(phone, messages, client, WHATSAPP_SENDER_NUMBER)
-                        conversation_state[phone]['history'].append(f"Giselle: {messages[0]}")
-                        conversation_state[phone]['pending_question'] = None
-                        conversation_state[phone]['pending_response_time'] = None
+                        state['history'].append(f"Giselle: {messages[0]}")
+                        state['pending_question'] = None
+                        state['pending_response_time'] = None
                         logger.debug(f"Sent gerente response to client {phone}: {messages}")
                     else:
                         logger.error(f"Could not find answer for question '{question}' in FAQ.")
-                        messages = ["Lo siento, no pude encontrar una respuesta. En qué más puedo ayudarte?"]
+                        messages = ["Lo siento, no pude encontrar una respuesta. ¿En qué más puedo ayudarte?"]
                         utils.send_consecutive_messages(phone, messages, client, WHATSAPP_SENDER_NUMBER)
-                        conversation_state[phone]['history'].append(f"Giselle: {messages[0]}")
-                        conversation_state[phone]['pending_question'] = None
-                        conversation_state[phone]['pending_response_time'] = None
+                        state['history'].append(f"Giselle: {messages[0]}")
+                        state['pending_question'] = None
+                        state['pending_response_time'] = None
                 else:
                     logger.error(f"No pending question found for {phone} despite pending_response_time.")
-                    conversation_state[phone]['pending_response_time'] = None
+                    state['pending_response_time'] = None
             else:
                 logger.debug(f"Waiting for FAQ response delay to complete for {phone}. Elapsed time: {elapsed_time} seconds")
-                utils.save_conversation_state(conversation_state, GCS_BUCKET_NAME, GCS_CONVERSATIONS_PATH)
-                utils.save_conversation_history(phone, conversation_state[phone]['history'], GCS_BUCKET_NAME, GCS_CONVERSATIONS_PATH)
-                utils.save_client_info(phone, conversation_state, GCS_BUCKET_NAME, GCS_CONVERSATIONS_PATH)
+                utils.save_conversation(phone, conversation_state, GCS_BUCKET_NAME, GCS_CONVERSATIONS_PATH)
                 return "Waiting for gerente response", 200
 
-        if not conversation_state[phone].get('client_name') and conversation_state[phone].get('name_asked', 0) > 0:
-            name = message_handler.extract_name(incoming_msg, "\n".join(conversation_state[phone]['history']))
+        # Step 7: Extract client name if not already set
+        if not state.get('client_name') and state.get('name_asked', 0) > 0:
+            name = message_handler.extract_name(incoming_msg, "\n".join(state['history']))
             if name:
-                conversation_state[phone]['client_name'] = name.capitalize()
-                logger.info(f"Client name set to: {conversation_state[phone]['client_name']}")
-                utils.save_client_info(phone, conversation_state, GCS_BUCKET_NAME, GCS_CONVERSATIONS_PATH)
-                conversation_state[phone]['name_asked'] = conversation_state[phone].get('name_asked', 0) + 1
+                state['client_name'] = name.capitalize()
+                logger.info(f"Client name extracted from message: {state['client_name']}")
+                state['name_asked'] = state.get('name_asked', 0) + 1
 
+        # Step 8: Prepare project information
         logger.debug("Preparing project information")
         project_info = ""
         try:
@@ -738,20 +742,19 @@ def handle_client_message(phone, incoming_msg, num_media, media_url=None):
                 project_info += f"Proyecto: {project}\n"
                 project_info += "Es un desarrollo que creo que te va a interesar.\n"
                 project_info += "\n"
-                if project.lower() in incoming_msg.lower() or ("departamentos" in incoming_msg.lower() and "condohotel" in data.get('type', '').lower()):
-                    conversation_state[phone]['last_mentioned_project'] = project
         except Exception as project_info_e:
             logger.error(f"Error preparing project information: {str(project_info_e)}")
             project_info = "Información de proyectos no disponible."
 
+        # Step 9: Process the message
         logger.debug("Building conversation history")
-        conversation_history = "\n".join(conversation_state[phone]['history'])
+        conversation_history = "\n".join(state['history'])
 
         logger.debug(f"Checking FAQ for an existing answer")
-        mentioned_project = conversation_state[phone].get('last_mentioned_project')
+        mentioned_project = state.get('last_mentioned_project')
         faq_answer = utils.get_faq_answer(incoming_msg, mentioned_project)
         if faq_answer:
-            client_name = conversation_state[phone].get('client_name', 'Cliente') or 'Cliente'
+            client_name = state.get('client_name', 'Cliente') or 'Cliente'
             rephrased_answer = rephrase_gerente_response(faq_answer, client_name, incoming_msg)
             messages = [rephrased_answer]
         else:
@@ -764,16 +767,20 @@ def handle_client_message(phone, incoming_msg, num_media, media_url=None):
             logger.debug(f"Needs gerente contact: {needs_gerente}")
 
             if needs_gerente:
-                conversation_state[phone]['pending_question'] = {
+                state['pending_question'] = {
                     'question': incoming_msg,
                     'mentioned_project': mentioned_project,
                     'client_phone': phone
                 }
-                logger.debug(f"Set pending question for {phone}: {conversation_state[phone]['pending_question']}")
+                logger.debug(f"Set pending question for {phone}: {state['pending_question']}")
                 for gerente_phone in [p for p, s in conversation_state.items() if s.get('is_gerente', False)]:
                     utils.send_consecutive_messages(
                         gerente_phone,
-                        [f"Nueva pregunta de cliente ({phone}): {incoming_msg}", "Por favor, responde con la información solicitada."],
+                        [
+                            f"Nueva pregunta de cliente ({phone}): {incoming_msg}",
+                            f"Contexto: Últimos mensajes - {conversation_history[-1000:]}",
+                            "Por favor, responde con la información solicitada."
+                        ],
                         client,
                         WHATSAPP_SENDER_NUMBER
                     )
@@ -781,33 +788,35 @@ def handle_client_message(phone, incoming_msg, num_media, media_url=None):
                 logger.debug(f"No gerente contact needed for message: {incoming_msg}")
 
         if mentioned_project:
-            conversation_state[phone]['last_mentioned_project'] = mentioned_project
+            state['last_mentioned_project'] = mentioned_project
             logger.debug(f"Updated last_mentioned_project to: {mentioned_project}")
 
-        last_incoming = datetime.fromisoformat(conversation_state[phone]['last_incoming_time']).astimezone(CST_TIMEZONE)
+        # Step 10: Send a 24-hour window reminder
+        last_incoming = datetime.fromisoformat(state['last_incoming_time']).astimezone(CST_TIMEZONE)
         time_since_last_incoming = (datetime.now(CST_TIMEZONE) - last_incoming).total_seconds() / 3600
-        if 20 <= time_since_last_incoming < 24 and not conversation_state[phone].get('reminder_sent', False):
+        if 20 <= time_since_last_incoming < 24 and not state.get('reminder_sent', False):
             reminder = [
-                f"Hola {conversation_state[phone].get('client_name', 'Cliente')}, ha pasado un tiempo desde nuestro último mensaje.",
-                "Me encantaría seguir ayudándote. ¿Tienes alguna pregunta o quieres más detalles? 😊"
+                f"Hola {state.get('client_name', 'Cliente')}, ha pasado un tiempo desde nuestro último mensaje.",
+                "¿Tienes alguna pregunta o quieres más detalles? 😊"
             ]
             utils.send_consecutive_messages(phone, reminder, client, WHATSAPP_SENDER_NUMBER)
-            conversation_state[phone]['history'].extend([f"Giselle: {msg}" for msg in reminder])
-            conversation_state[phone]['reminder_sent'] = True
+            state['history'].extend([f"Giselle: {msg}" for msg in reminder])
+            state['reminder_sent'] = True
 
+        # Step 11: Send the generated messages
         utils.send_consecutive_messages(phone, messages, client, WHATSAPP_SENDER_NUMBER)
 
         for msg in messages:
-            conversation_state[phone]['history'].append(f"Giselle: {msg}")
-        conversation_state[phone]['history'] = conversation_state[phone]['history'][-10:]
+            state['history'].append(f"Giselle: {msg}")
+        state['history'] = state['history'][-10:]
 
-        conversation_state[phone]['schedule_next'] = None
-        conversation_state[phone]['recontact_attempts'] = 0
-        conversation_state[phone]['reminder_sent'] = False
+        # Step 12: Reset recontact schedule if the client responds
+        state['schedule_next'] = None
+        state['recontact_attempts'] = 0
+        state['reminder_sent'] = False
 
-        utils.save_conversation_state(conversation_state, GCS_BUCKET_NAME, GCS_CONVERSATIONS_PATH)
-        utils.save_conversation_history(phone, conversation_state[phone]['history'], GCS_BUCKET_NAME, GCS_CONVERSATIONS_PATH)
-        utils.save_client_info(phone, conversation_state, GCS_BUCKET_NAME, GCS_CONVERSATIONS_PATH)
+        # Step 13: Save conversation state
+        utils.save_conversation(phone, conversation_state, GCS_BUCKET_NAME, GCS_CONVERSATIONS_PATH)
 
         logger.debug("Returning success response")
         return "Mensaje enviado", 200
@@ -836,8 +845,9 @@ def whatsapp():
         incoming_msg = request.values.get('Body', '').strip()
         num_media = int(request.values.get('NumMedia', '0'))
         media_url = request.values.get('MediaUrl0', None) if num_media > 0 else None
+        profile_name = request.values.get('ProfileName', None)
 
-        logger.debug(f"From phone: {phone}, Message: {incoming_msg}, NumMedia: {num_media}, MediaUrl: {media_url}")
+        logger.debug(f"From phone: {phone}, Message: {incoming_msg}, NumMedia: {num_media}, MediaUrl: {media_url}, ProfileName: {profile_name}")
 
         if not phone:
             logger.error("No se encontró 'From' en la solicitud")
@@ -904,22 +914,24 @@ def whatsapp():
                     'priority': False,
                     'stage': 'Prospección',
                     'interest_level': 0,
-                    'reminder_sent': False
+                    'reminder_sent': False,
+                    'zoom_proposed': False,
+                    'zoom_scheduled': False,
+                    'zoom_details': {},
+                    'intention_history': []
                 }
 
             if not conversation_state[phone].get('introduced', False):
                 conversation_state[phone]['introduced'] = True
                 conversation_state[phone]['name_asked'] = 1
-                messages = ["Hola, soy Giselle de FAV Living, desarrolladora inmobiliaria. Podrías darme tu nombre para registrarte?"]
+                messages = ["Hola, soy Giselle de FAV Living, desarrolladora inmobiliaria. ¿Podrías darme tu nombre para registrarte?"]
                 utils.send_consecutive_messages(phone, messages, client, WHATSAPP_SENDER_NUMBER)
                 conversation_state[phone]['history'].append(f"Giselle: {messages[0]}")
-                utils.save_conversation_state(conversation_state, GCS_BUCKET_NAME, GCS_CONVERSATIONS_PATH)
-                utils.save_conversation_history(phone, conversation_state[phone]['history'], GCS_BUCKET_NAME, GCS_CONVERSATIONS_PATH)
-                utils.save_client_info(phone, conversation_state, GCS_BUCKET_NAME, GCS_CONVERSATIONS_PATH)
+                utils.save_conversation(phone, conversation_state, GCS_BUCKET_NAME, GCS_CONVERSATIONS_PATH)
                 return "Mensaje enviado", 200
 
             if incoming_msg:
-                return handle_client_message(phone, incoming_msg, num_media, media_url)
+                return handle_client_message(phone, incoming_msg, num_media, media_url, profile_name)
             elif num_media > 0 and media_url:
                 error_messages, transcribed_msg = message_handler.handle_audio_message(
                     media_url, phone, TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN
@@ -928,7 +940,7 @@ def whatsapp():
                     utils.send_consecutive_messages(phone, error_messages, client, WHATSAPP_SENDER_NUMBER)
                     return "Error procesando audio", 200
                 if transcribed_msg:
-                    return handle_client_message(phone, transcribed_msg, num_media=0, media_url=None)
+                    return handle_client_message(phone, transcribed_msg, num_media=0, media_url=None, profile_name=profile_name)
             else:
                 logger.error("Mensaje del cliente sin contenido de texto o audio")
                 return "Error: Mensaje sin contenido", 400
@@ -946,15 +958,13 @@ def whatsapp():
                 return "Error: Invalid phone number format in exception handler", 400
             message = client.messages.create(
                 from_=WHATSAPP_SENDER_NUMBER,
-                body="Lo siento, ocurrió un error. En qué más puedo ayudarte?",
+                body="Lo siento, ocurrió un error. ¿En qué más puedo ayudarte?",
                 to=phone
             )
             logger.info(f"Fallback message sent: SID {message.sid}, Estado: {message.status}")
             if not conversation_state[phone].get('is_gerente', False):
-                conversation_state[phone]['history'].append("Giselle: Lo siento, ocurrió un error. En qué más puedo ayudarte?")
-                utils.save_conversation_state(conversation_state, GCS_BUCKET_NAME, GCS_CONVERSATIONS_PATH)
-                utils.save_conversation_history(phone, conversation_state[phone]['history'], GCS_BUCKET_NAME, GCS_CONVERSATIONS_PATH)
-                utils.save_client_info(phone, conversation_state, GCS_BUCKET_NAME, GCS_CONVERSATIONS_PATH)
+                conversation_state[phone]['history'].append("Giselle: Lo siento, ocurrió un error. ¿En qué más puedo ayudarte?")
+                utils.save_conversation(phone, conversation_state, GCS_BUCKET_NAME, GCS_CONVERSATIONS_PATH)
         except Exception as twilio_e:
             logger.error(f"Error sending fallback message: {str(twilio_e)}")
         return "Error interno del servidor", 500
@@ -974,6 +984,9 @@ def trigger_recontact():
     logger.info("Triggering recontact scheduling")
     current_time = datetime.now(CST_TIMEZONE)
     logger.debug(f"Current time (CST): {current_time}")
+
+    recontact_window_start = current_time.replace(hour=RECONTACT_HOUR_CST, minute=RECONTACT_MINUTE_CST, second=0, microsecond=0) - timedelta(minutes=RECONTACT_TOLERANCE_MINUTES)
+    recontact_window_end = current_time.replace(hour=RECONTACT_HOUR_CST, minute=RECONTACT_MINUTE_CST, second=0, microsecond=0) + timedelta(minutes=RECONTACT_TOLERANCE_MINUTES)
 
     for phone, state in list(conversation_state.items()):
         logger.debug(f"Processing client: {phone}")
@@ -1000,8 +1013,12 @@ def trigger_recontact():
         recontact_time = recontact_time.replace(hour=RECONTACT_HOUR_CST, minute=RECONTACT_MINUTE_CST, second=0, microsecond=0)
         logger.debug(f"Scheduled recontact time for {phone}: {recontact_time}")
 
-        if current_time < recontact_time:
-            logger.debug(f"Skipping {phone}: Not yet time to recontact (current: {current_time}, scheduled: {recontact_time})")
+        if not (recontact_window_start <= current_time <= recontact_window_end):
+            logger.debug(f"Skipping {phone}: Current time {current_time} is outside recontact window ({recontact_window_start} to {recontact_window_end})")
+            continue
+
+        if recontact_time.date() != current_time.date():
+            logger.debug(f"Skipping {phone}: Recontact date {recontact_time.date()} does not match today {current_time.date()}")
             continue
 
         if state.get('recontact_attempts', 0) >= 3:
@@ -1033,9 +1050,7 @@ def trigger_recontact():
         state['recontact_attempts'] = state.get('recontact_attempts', 0) + 1
         state['schedule_next'] = None
 
-        utils.save_conversation_state(conversation_state, GCS_BUCKET_NAME, GCS_CONVERSATIONS_PATH)
-        utils.save_conversation_history(phone, state['history'], GCS_BUCKET_NAME, GCS_CONVERSATIONS_PATH)
-        utils.save_client_info(phone, state, GCS_BUCKET_NAME, GCS_CONVERSATIONS_PATH)
+        utils.save_conversation(phone, conversation_state, GCS_BUCKET_NAME, GCS_CONVERSATIONS_PATH)
 
     for gerente_phone, gerente_state in list(conversation_state.items()):
         if not gerente_state.get('is_gerente', False):
