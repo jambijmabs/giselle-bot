@@ -11,6 +11,7 @@ import client_handler
 import report_handler
 import recontact_handler
 import pytz
+from datetime import datetime  # Añadido para corregir el NameError
 
 # Configuration Section
 CST_TIMEZONE = pytz.timezone("America/Mexico_City")
