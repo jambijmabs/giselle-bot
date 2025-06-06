@@ -248,7 +248,6 @@ def ensure_question_in_response(messages, client_name):
         return ["No entendí bien tu mensaje, ¿puedes darme más detalles?"]
 
     last_message = messages[-1]
-    # Remove the generic question addition, as the OpenAI prompt now ensures a relevant question
     if not last_message.endswith('?'):
         logger.warning(f"Response does not end with a question: {last_message}")
     return messages
@@ -267,27 +266,25 @@ def process_message(incoming_msg, phone, conversation_state, project_info, conve
         if corrected != word:
             incoming_msg_corrected = incoming_msg_corrected.replace(word, corrected)
 
-    # Detect project in the message
-    normalized_msg = incoming_msg_corrected.replace(" ", "")
-    for keyword, project in bot_config.PROJECT_KEYWORD_MAPPING.items():
-        if keyword in normalized_msg:
-            mentioned_project = project
-            break
-
-    if not mentioned_project:
-        logger.debug("No project mentioned in message; checking conversation history")
-        for msg in conversation_history.split('\n'):
-            normalized_hist_msg = msg.lower().replace(" ", "")
-            for keyword, project in bot_config.PROJECT_KEYWORD_MAPPING.items():
-                if keyword in normalized_hist_msg:
-                    mentioned_project = project
-                    break
-            if mentioned_project:
+    # Detect project in the message only if profiling is complete
+    if state.get('purchase_intent_asked', False):  # Only look for projects after profiling
+        normalized_msg = incoming_msg_corrected.replace(" ", "")
+        for keyword, project in bot_config.PROJECT_KEYWORD_MAPPING.items():
+            if keyword in normalized_msg:
+                mentioned_project = project
                 break
 
-    # Remove default project selection
-    # Do not assign a default project if none is mentioned or found in history
-    # Let OpenAI prompt handle the initial response with a question about preferences
+        if not mentioned_project:
+            logger.debug("No project mentioned in message; checking conversation history")
+            for msg in conversation_history.split('\n'):
+                normalized_hist_msg = msg.lower().replace(" ", "")
+                for keyword, project in bot_config.PROJECT_KEYWORD_MAPPING.items():
+                    if keyword in normalized_hist_msg:
+                        mentioned_project = project
+                        break
+                if mentioned_project:
+                    break
+
     logger.debug(f"Determined mentioned_project: {mentioned_project}")
 
     client_name = state.get('client_name', 'Cliente') or 'Cliente'
@@ -349,6 +346,19 @@ def process_message(incoming_msg, phone, conversation_state, project_info, conve
         else:
             messages = [f"Entendido, {client_name}. ¿Me avisas cuando hagas el depósito?"]
     else:
+        # Update state based on intention
+        if intention == "needs" and 'data' in intention_data and 'needs' in intention_data['data']:
+            state['needs'] = intention_data['data']['needs']
+        elif intention == "budget" and 'data' in intention_data and 'budget' in intention_data['data']:
+            state['client_budget'] = intention_data['data']['budget']
+        elif intention == "contact_preference" and 'data' in intention_data:
+            if 'time' in intention_data['data']:
+                state['preferred_time'] = intention_data['data']['time']
+            if 'days' in intention_data['data']:
+                state['preferred_days'] = intention_data['data']['days']
+        elif intention == "purchase_intent" and 'data' in intention_data and 'intent' in intention_data['data']:
+            state['purchase_intent'] = intention_data['data']['intent']
+
         # Use AI to generate a response
         client_budget = state.get('client_budget', 'No especificado')
         client_needs = state.get('needs', 'No especificadas')
