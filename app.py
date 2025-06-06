@@ -135,7 +135,14 @@ def whatsapp():
 
         else:
             logger.info(f"Identificado como cliente: {phone}")
-            if phone not in conversation_state:
+            # Load conversation history to check if it exists
+            history = utils.load_conversation_history(phone, GCS_BUCKET_NAME, GCS_CONVERSATIONS_PATH)
+            if not isinstance(history, list):
+                history = []
+
+            # Initialize or reset client state if there's no history
+            if phone not in conversation_state or not history:
+                logger.info(f"Initializing or resetting state for client {phone} due to no history")
                 conversation_state[phone] = {
                     'history': [],
                     'name_asked': 0,
@@ -164,15 +171,54 @@ def whatsapp():
                     'zoom_proposed': False,
                     'zoom_scheduled': False,
                     'zoom_details': {},
-                    'intention_history': []
+                    'intention_history': [],
+                    'needs_asked': False,
+                    'budget_asked': False,
+                    'contact_time_asked': False,
+                    'purchase_intent_asked': False
                 }
 
-            if not conversation_state[phone].get('introduced', False):
-                conversation_state[phone]['introduced'] = True
-                conversation_state[phone]['name_asked'] = 1
-                messages = ["Hola, soy Giselle de FAV Living, desarrolladora inmobiliaria. ¿Podrías darme tu nombre para registrarte?"]
+            state = conversation_state[phone]
+
+            # Force profiling if client name is not set
+            if not state.get('client_name') and state.get('name_asked', 0) == 0:
+                state['name_asked'] = 1
+                messages = ["¡Hola! Soy Giselle de FAV Living. 😊 ¿Me podrías decir tu nombre para conocerte mejor?"]
                 utils.send_consecutive_messages(phone, messages, client, WHATSAPP_SENDER_NUMBER)
-                conversation_state[phone]['history'].append(f"Giselle: {messages[0]}")
+                state['history'].append(f"Giselle: {messages[0]}")
+                utils.save_conversation(phone, conversation_state, GCS_BUCKET_NAME, GCS_CONVERSATIONS_PATH)
+                return "Mensaje enviado", 200
+
+            # Force profiling questions if not yet asked
+            if state.get('client_name') and not state.get('needs_asked', False):
+                state['needs_asked'] = True
+                messages = [f"¡Hola {state['client_name']}! Me encantaría ayudarte a encontrar el proyecto perfecto. ¿Estás buscando algo para inversión, para vivir, o tal vez un lugar para vacacionar?"]
+                utils.send_consecutive_messages(phone, messages, client, WHATSAPP_SENDER_NUMBER)
+                state['history'].append(f"Giselle: {messages[0]}")
+                utils.save_conversation(phone, conversation_state, GCS_BUCKET_NAME, GCS_CONVERSATIONS_PATH)
+                return "Mensaje enviado", 200
+
+            if state.get('needs_asked') and not state.get('budget_asked', False):
+                state['budget_asked'] = True
+                messages = [f"Entendido, {state['client_name']}. ¿Cuál sería tu presupuesto aproximado para este proyecto?"]
+                utils.send_consecutive_messages(phone, messages, client, WHATSAPP_SENDER_NUMBER)
+                state['history'].append(f"Giselle: {messages[0]}")
+                utils.save_conversation(phone, conversation_state, GCS_BUCKET_NAME, GCS_CONVERSATIONS_PATH)
+                return "Mensaje enviado", 200
+
+            if state.get('budget_asked') and not state.get('contact_time_asked', False):
+                state['contact_time_asked'] = True
+                messages = [f"Gracias por compartir eso, {state['client_name']}. ¿En qué horario te vendría mejor que charlemos más a fondo?"]
+                utils.send_consecutive_messages(phone, messages, client, WHATSAPP_SENDER_NUMBER)
+                state['history'].append(f"Giselle: {messages[0]}")
+                utils.save_conversation(phone, conversation_state, GCS_BUCKET_NAME, GCS_CONVERSATIONS_PATH)
+                return "Mensaje enviado", 200
+
+            if state.get('contact_time_asked') and not state.get('purchase_intent_asked', False):
+                state['purchase_intent_asked'] = True
+                messages = [f"Perfecto, {state['client_name']}. Una última pregunta para entenderte mejor: ¿qué tan pronto te gustaría avanzar con este proyecto?"]
+                utils.send_consecutive_messages(phone, messages, client, WHATSAPP_SENDER_NUMBER)
+                state['history'].append(f"Giselle: {messages[0]}")
                 utils.save_conversation(phone, conversation_state, GCS_BUCKET_NAME, GCS_CONVERSATIONS_PATH)
                 return "Mensaje enviado", 200
 
