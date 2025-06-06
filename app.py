@@ -140,9 +140,9 @@ def whatsapp():
             if not isinstance(history, list):
                 history = []
 
-            # Initialize or reset client state if there's no history
-            if phone not in conversation_state or not history:
-                logger.info(f"Initializing or resetting state for client {phone} due to no history")
+            # Initialize or reset client state if there's no history or profile is incomplete
+            if phone not in conversation_state or not history or not is_profile_complete(conversation_state[phone]):
+                logger.info(f"Initializing or resetting state for client {phone} due to no history or incomplete profile")
                 conversation_state[phone] = {
                     'history': [],
                     'name_asked': 0,
@@ -175,7 +175,9 @@ def whatsapp():
                     'needs_asked': False,
                     'budget_asked': False,
                     'contact_time_asked': False,
-                    'purchase_intent_asked': False
+                    'purchase_intent_asked': False,
+                    'needs': None,
+                    'purchase_intent': None
                 }
 
             state = conversation_state[phone]
@@ -257,16 +259,27 @@ def whatsapp():
                 return "Error: Invalid phone number format in exception handler", 400
             message = client.messages.create(
                 from_=WHATSAPP_SENDER_NUMBER,
-                body="Lo siento, ocurrió un error. ¿En qué más puedo ayudarte?",
+                body="Lo siento, ocurrió un error. Por favor, intenta de nuevo o dime cómo puedo ayudarte.",
                 to=phone
             )
             logger.info(f"Fallback message sent: SID {message.sid}, Estado: {message.status}")
             if not conversation_state[phone].get('is_gerente', False):
-                conversation_state[phone]['history'].append("Giselle: Lo siento, ocurrió un error. ¿En qué más puedo ayudarte?")
+                conversation_state[phone]['history'].append("Giselle: Lo siento, ocurrió un error. Por favor, intenta de nuevo o dime cómo puedo ayudarte.")
                 utils.save_conversation(phone, conversation_state, GCS_BUCKET_NAME, GCS_CONVERSATIONS_PATH)
         except Exception as twilio_e:
             logger.error(f"Error sending fallback message: {str(twilio_e)}")
         return "Error interno del servidor", 500
+
+def is_profile_complete(state):
+    """Check if the client's profile is complete."""
+    required_fields = [
+        state.get('client_name'),
+        state.get('needs'),
+        state.get('client_budget'),
+        state.get('preferred_time') or state.get('preferred_days'),
+        state.get('purchase_intent')
+    ]
+    return all(field and field != "No especificado" for field in required_fields)
 
 @app.route('/', methods=['GET'])
 def root():
