@@ -121,7 +121,7 @@ def extract_name(incoming_msg, conversation_history):
             return None
         return name
     except Exception as e:
-        logger.error(f"Error extracting name with OpenAI: {str(e)}")
+        logger.error(f"Error extracting name with OpenAI: {str(e)}", exc_info=True)
         return None
 
 def is_ready_for_zoom(phone, conversation_state):
@@ -204,7 +204,7 @@ def detect_intention(incoming_msg, conversation_history, is_gerente=False):
         logger.debug(f"Intention detected: {result}")
         return result
     except Exception as e:
-        logger.error(f"Error detecting intention with OpenAI: {str(e)}")
+        logger.error(f"Error detecting intention with OpenAI: {str(e)}", exc_info=True)
         return {"intention": "unknown", "data": {}}
 
 def needs_gerente_contact(response, question, project_data, conversation_history):
@@ -239,7 +239,7 @@ def needs_gerente_contact(response, question, project_data, conversation_history
         result = response.choices[0].message.content.strip().lower()
         return result == "true"
     except Exception as e:
-        logger.error(f"Error determining if gerente contact is needed: {str(e)}")
+        logger.error(f"Error determining if gerente contact is needed: {str(e)}", exc_info=True)
         return False
 
 def ensure_question_in_response(messages, client_name):
@@ -267,7 +267,7 @@ def process_message(incoming_msg, phone, conversation_state, project_info, conve
             incoming_msg_corrected = incoming_msg_corrected.replace(word, corrected)
 
     # Detect project in the message only if profiling is complete
-    if state.get('purchase_intent_asked', False):  # Only look for projects after profiling
+    if state.get('purchase_intent_asked', False) and all([state.get('client_name'), state.get('needs'), state.get('client_budget'), state.get('preferred_time') or state.get('preferred_days'), state.get('purchase_intent')]):  # Only look for projects after profiling
         normalized_msg = incoming_msg_corrected.replace(" ", "")
         for keyword, project in bot_config.PROJECT_KEYWORD_MAPPING.items():
             if keyword in normalized_msg:
@@ -410,8 +410,7 @@ def process_message(incoming_msg, phone, conversation_state, project_info, conve
 
         except Exception as openai_e:
             logger.error(f"Fallo con OpenAI API: {str(openai_e)}", exc_info=True)
-            messages = [f"Entiendo, {client_name}. Voy a consultar eso para ti, ¿te parece bien que te cuente sobre otro proyecto mientras tanto?"]
-            return messages, mentioned_project, True
+            raise
 
     # Propose Zoom meeting if the client is ready
     if is_ready_for_zoom(phone, conversation_state) and not state.get('zoom_scheduled', False):
