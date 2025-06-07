@@ -292,16 +292,22 @@ def process_message(incoming_msg, phone, conversation_state, project_info, conve
 
     # Prepare the project data for the AI, if a project is mentioned
     project_data = "No hay un proyecto específico seleccionado aún."
-    if mentioned_project:
+    if mentioned_project and mentioned_project in projects_data:
         project_data_dict = projects_data.get(mentioned_project, {})
         if not isinstance(project_data_dict, dict):
             logger.warning(f"project_data for {mentioned_project} is not a dict: {project_data_dict}")
             project_data_dict = {}
         
-        project_data = project_data_dict.get('description', "Información no disponible para este proyecto.")
-        project_data += "\n\nInformación Adicional:\n"
+        project_data = f"Proyecto: {mentioned_project}\n"
+        project_data += f"Descripción: {project_data_dict.get('description', 'Información no disponible')}\n"
         project_data += f"Tipo: {project_data_dict.get('type', 'No especificado')}\n"
         project_data += f"Ubicación: {project_data_dict.get('location', 'No especificada')}\n"
+        prices = project_data_dict.get('prices', {})
+        if isinstance(prices, dict):
+            project_data += "Precios: " + ", ".join([f"{k} ${v:,}" for k, v in prices.items()]) + " MXN\n"
+        amenities = project_data_dict.get('amenities', [])
+        if isinstance(amenities, list):
+            project_data += f"Amenidades: {', '.join(amenities)}\n"
 
     # Detect the intention of the message
     intention_result = detect_intention(incoming_msg_corrected, conversation_history, is_gerente=False)
@@ -367,6 +373,7 @@ def process_message(incoming_msg, phone, conversation_state, project_info, conve
             f"{bot_config.BOT_PERSONALITY}\n\n"
             f"Instrucciones para las respuestas:\n{bot_config.RESPONSE_INSTRUCTIONS}\n\n"
             f"Información del cliente:\n"
+            f"Nombre: {client_name}\n"
             f"Presupuesto: {client_budget}\n"
             f"Necesidades: {client_needs}\n"
             f"Intención de compra: {client_purchase_intent}\n\n"
@@ -377,7 +384,7 @@ def process_message(incoming_msg, phone, conversation_state, project_info, conve
             f"Historial de conversación:\n"
             f"{conversation_history}\n\n"
             f"Mensaje del cliente: {incoming_msg_corrected}\n\n"
-            f"Responde de forma breve y profesional, enfocándote en el proyecto {mentioned_project if mentioned_project else 'ninguno seleccionado aún'}."
+            f"Responde de forma breve y profesional, enfocándote en el proyecto {mentioned_project if mentioned_project else 'ninguno seleccionado aún'}, y usa emoticones solo si es necesario para empatía o entusiasmo."
         )
         logger.debug(f"Sending request to OpenAI for client message: '{incoming_msg_corrected}', project: {mentioned_project}")
 
@@ -388,7 +395,7 @@ def process_message(incoming_msg, phone, conversation_state, project_info, conve
                     {"role": "system", "content": prompt},
                     {"role": "user", "content": incoming_msg_corrected}
                 ],
-                max_tokens=100,
+                max_tokens=150,
                 temperature=0.3
             )
             reply = response.choices[0].message.content.strip()
