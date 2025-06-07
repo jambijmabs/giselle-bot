@@ -1,6 +1,7 @@
 import os
 import logging
 import json
+import re
 import gcsfs
 from datetime import datetime
 import pandas as pd
@@ -91,22 +92,37 @@ def download_projects_from_storage(bucket_name, gcs_path):
     try:
         storage_client = storage.Client()
         bucket = storage_client.bucket(bucket_name)
-        blobs = bucket.list_blobs(prefix=gcs_path)
+        blobs = bucket.list_blobs(prefix=gcs_path, delimiter=None)  # No delimiter to include subdirectories
         for blob in blobs:
             if blob.name.endswith(('.json', '.txt')) and not blob.name.endswith(('_faq.txt', '_respuestas.txt')):
+                # Extract project name from the last part of the path (e.g., CALIDRIS from PROYECTOS/CALIDRIS/CALIDRIS.txt)
+                project_name = os.path.basename(blob.name).replace('.json', '').replace('.txt', '').upper()
                 temp_file_path = f"/tmp/{os.path.basename(blob.name)}"
                 blob.download_to_filename(temp_file_path)
                 logger.info(f"Descargado archivo: {blob.name} a {temp_file_path}")
                 if blob.name.endswith('.json'):
                     with open(temp_file_path, 'r', encoding='utf-8') as f:
                         data = json.load(f)
-                        project_name = os.path.splitext(os.path.basename(blob.name))[0].upper()
                         projects_data[project_name] = data
                 elif blob.name.endswith('.txt'):
                     with open(temp_file_path, 'r', encoding='utf-8') as f:
                         content = f.read()
-                        project_name = os.path.splitext(os.path.basename(blob.name))[0].upper()
-                        projects_data[project_name] = {'description': content}
+                        data = {}
+                        # Parse text content into structured data
+                        name_match = re.search(r'Nombre:\s*(\w+)', content, re.IGNORECASE)
+                        data['name'] = name_match.group(1) if name_match else project_name
+                        location_match = re.search(r'Ubicación:\s*([\w\s,]+)', content, re.IGNORECASE)
+                        data['location'] = location_match.group(1) if location_match else 'No especificada'
+                        prices_match = re.search(r'Precios:\s*([^$]+)', content, re.IGNORECASE)
+                        if prices_match:
+                            prices_text = prices_match.group(1)
+                            prices = {}
+                            for price in re.findall(r'(\w+)\s*\$([\d,]+)', prices_text):
+                                prices[price[0]] = int(price[1].replace(',', ''))
+                            data['prices'] = prices
+                        amenities_match = re.search(r'Amenidades:\s*([\w\s,]+)', content, re.IGNORECASE)
+                        data['amenities'] = [a.strip() for a in amenities_match.group(1).split(',')] if amenities_match else ['No especificadas']
+                        projects_data[project_name] = data
     except Exception as e:
         logger.error(f"Error descargando proyectos desde GCS: {str(e)}", exc_info=True)
 
@@ -130,7 +146,21 @@ def load_projects_from_folder(gcs_path):
                         with open(file_path, 'r', encoding='utf-8') as f:
                             content = f.read()
                             project_name = os.path.splitext(filename)[0].upper()
-                            projects_data[project_name] = {'description': content}
+                            data = {}
+                            name_match = re.search(r'Nombre:\s*(\w+)', content, re.IGNORECASE)
+                            data['name'] = name_match.group(1) if name_match else project_name
+                            location_match = re.search(r'Ubicación:\s*([\w\s,]+)', content, re.IGNORECASE)
+                            data['location'] = location_match.group(1) if location_match else 'No especificada'
+                            prices_match = re.search(r'Precios:\s*([^$]+)', content, re.IGNORECASE)
+                            if prices_match:
+                                prices_text = prices_match.group(1)
+                                prices = {}
+                                for price in re.findall(r'(\w+)\s*\$([\d,]+)', prices_text):
+                                    prices[price[0]] = int(price[1].replace(',', ''))
+                                data['prices'] = prices
+                            amenities_match = re.search(r'Amenidades:\s*([\w\s,]+)', content, re.IGNORECASE)
+                            data['amenities'] = [a.strip() for a in amenities_match.group(1).split(',')] if amenities_match else ['No especificadas']
+                            projects_data[project_name] = data
                     logger.info(f"Loaded project data for {project_name}: {projects_data[project_name]}")
         else:
             logger.warning(f"Carpeta no encontrada: {local_path}")
