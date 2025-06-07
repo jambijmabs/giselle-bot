@@ -75,6 +75,7 @@ logger.debug("Conversation state inicializado")
 @app.route('/whatsapp', methods=['POST'])
 def whatsapp():
     logger.debug("Entered /whatsapp route")
+    messages = []  # Inicializar messages para evitar UnboundLocalError
     try:
         if client is None:
             logger.error("Twilio client not initialized. Cannot process WhatsApp messages.")
@@ -218,6 +219,8 @@ def whatsapp():
                         if name:
                             state['client_name'] = name
                             logger.info(f"Client name updated to: {state['client_name']}")
+                            utils.save_conversation(phone, conversation_state, GCS_BUCKET_NAME, GCS_CONVERSATIONS_PATH)  # Guardar inmediatamente
+                            messages = [f"¡Gracias, {state['client_name']}! ¿Estás buscando algo para inversión, para vivir, o tal vez un lugar para vacacionar?"]
                         else:
                             messages = ["¡Hola! Soy Giselle de FAV Living. ¿Me podrías decir tu nombre para conocerte mejor?"]
                     else:
@@ -304,14 +307,11 @@ def whatsapp():
             if not phone.startswith('whatsapp:+'):
                 logger.error(f"Invalid phone number format in exception handler: {repr(phone)}")
                 return "Error: Invalid phone number format in exception handler", 400
-            message = client.messages.create(
-                from_=WHATSAPP_SENDER_NUMBER,
-                body="Lo siento, ocurrió un error. Por favor, intenta de nuevo o dime cómo puedo ayudarte.",
-                to=phone
-            )
-            logger.info(f"Fallback message sent: SID {message.sid}, Estado: {message.status}")
+            messages = ["Lo siento, ocurrió un error. Por favor, intenta de nuevo o dime cómo puedo ayudarte."]
+            utils.send_consecutive_messages(phone, messages, client, WHATSAPP_SENDER_NUMBER)
+            logger.info(f"Fallback message sent: SID {messages[0].sid if hasattr(messages[0], 'sid') else 'N/A'}, Estado: sent")
             if not conversation_state[phone].get('is_gerente', False):
-                conversation_state[phone]['history'].append("Giselle: Lo siento, ocurrió un error. Por favor, intenta de nuevo o dime cómo puedo ayudarte.")
+                conversation_state[phone]['history'].append(f"Giselle: {messages[0]}")
                 utils.save_conversation(phone, conversation_state, GCS_BUCKET_NAME, GCS_CONVERSATIONS_PATH)
         except Exception as twilio_e:
             logger.error(f"Error sending fallback message: {str(twilio_e)}")
