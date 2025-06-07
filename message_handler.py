@@ -100,7 +100,7 @@ def extract_name(incoming_msg, conversation_history):
         "El mensaje puede contener frases como 'me llamo', 'mi nombre es', 'soy', o simplemente un nombre propio. "
         "Tu tarea es identificar y extraer únicamente el nombre propio (sin apellidos ni contexto adicional). "
         "Revisa también el historial para buscar nombres mencionados previamente. "
-        "Si no hay un nombre claro en el mensaje o historial, retorna None. "
+        "Si no hay un nombre claro en el mensaje o historial (por ejemplo, 'si claro me llamo rupert' debe devolver 'rupert'), retorna None. "
         "Devuelve el nombre en formato de texto plano.\n\n"
         f"Historial de conversación:\n{conversation_history}\n\n"
         f"Mensaje: {incoming_msg}"
@@ -117,12 +117,26 @@ def extract_name(incoming_msg, conversation_history):
             temperature=0.3
         )
         name = response.choices[0].message.content.strip()
+        logger.debug(f"Extracted name from OpenAI: {name}")
         if name.lower() == "none" or not name:
-            return None
+            # Fallback para extraer manualmente si OpenAI falla
+            name_match = re.search(r"(?:me llamo|mi nombre es|soy)\s+([A-Za-záéíóúÁÉÍÓÚñÑ]+)", incoming_msg, re.I)
+            if name_match:
+                name = name_match.group(1).capitalize()
+                logger.debug(f"Fallback extracted name: {name}")
+            else:
+                name = None
         return name
     except Exception as e:
         logger.error(f"Error extracting name with OpenAI: {str(e)}", exc_info=True)
-        return None
+        # Fallback manual si hay error
+        name_match = re.search(r"(?:me llamo|mi nombre es|soy)\s+([A-Za-záéíóúÁÉÍÓÚñÑ]+)", incoming_msg, re.I)
+        if name_match:
+            name = name_match.group(1).capitalize()
+            logger.debug(f"Fallback extracted name after error: {name}")
+        else:
+            name = None
+        return name
 
 def is_ready_for_zoom(phone, conversation_state):
     """Determine if the client is ready to schedule a Zoom meeting."""
