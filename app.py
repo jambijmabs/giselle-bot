@@ -14,16 +14,6 @@ import pytz
 from datetime import datetime
 import re  # Añadido para la lógica de respaldo de extracción de nombre
 
-# Configuration Section
-CST_TIMEZONE = pytz.timezone("America/Mexico_City")
-WHATSAPP_SENDER_NUMBER = bot_config.WHATSAPP_SENDER_NUMBER
-TWILIO_ACCOUNT_SID = os.getenv('TWILIO_ACCOUNT_SID')
-TWILIO_AUTH_TOKEN = os.getenv('TWILIO_AUTH_TOKEN')
-OPENAI_API_KEY = os.getenv('OPENAI_API_KEY')
-GCS_BUCKET_NAME = bot_config.GCS_BUCKET_NAME
-GCS_CONVERSATIONS_PATH = bot_config.GCS_CONVERSATIONS_PATH
-DEFAULT_PORT = 8080
-
 # Configure logging
 logging.basicConfig(
     level=logging.DEBUG,
@@ -39,6 +29,21 @@ app = Flask(__name__)
 
 # Configure logger
 logger = logging.getLogger(__name__)
+
+# Mensaje de depuración al inicio del script
+logger.info("Script app.py iniciado")
+
+# Configuration Section
+logger.debug("Configurando variables de configuración")
+CST_TIMEZONE = pytz.timezone("America/Mexico_City")
+WHATSAPP_SENDER_NUMBER = bot_config.WHATSAPP_SENDER_NUMBER
+TWILIO_ACCOUNT_SID = os.getenv('TWILIO_ACCOUNT_SID')
+TWILIO_AUTH_TOKEN = os.getenv('TWILIO_AUTH_TOKEN')
+OPENAI_API_KEY = os.getenv('OPENAI_API_KEY')
+GCS_BUCKET_NAME = bot_config.GCS_BUCKET_NAME
+GCS_CONVERSATIONS_PATH = bot_config.GCS_CONVERSATIONS_PATH
+DEFAULT_PORT = 8080
+logger.debug("Variables de configuración cargadas")
 
 # Log registered routes after app initialization
 with app.app_context():
@@ -65,6 +70,7 @@ if not OPENAI_API_KEY:
 
 # Global conversation state
 conversation_state = {}
+logger.debug("Conversation state inicializado")
 
 @app.route('/whatsapp', methods=['POST'])
 def whatsapp():
@@ -74,6 +80,7 @@ def whatsapp():
             logger.error("Twilio client not initialized. Cannot process WhatsApp messages.")
             return "Error: Twilio client not initialized", 500
 
+        logger.debug("Cargando conversation state")
         utils.load_conversation_state(conversation_state, GCS_BUCKET_NAME, bot_config.GCS_CONVERSATIONS_PATH)
         logger.debug("Conversation state reloaded")
 
@@ -139,7 +146,9 @@ def whatsapp():
         else:
             logger.info(f"Identificado como cliente: {phone}")
             # Load conversation history to check if it exists
+            logger.debug("Cargando historial de conversación")
             history = utils.load_conversation_history(phone, GCS_BUCKET_NAME, GCS_CONVERSATIONS_PATH)
+            logger.debug(f"Historial cargado: {history}")
             if not isinstance(history, list):
                 history = []
 
@@ -184,18 +193,23 @@ def whatsapp():
                 }
 
             state = conversation_state[phone]
+            logger.debug(f"Estado del cliente: {state}")
 
             # Guardar el mensaje del cliente en el historial inmediatamente
             if incoming_msg:
+                logger.debug(f"Guardando mensaje del cliente: {incoming_msg}")
                 state['history'].append(f"Cliente: {incoming_msg}")
                 state['history'] = state['history'][-10:]  # Mantener solo los últimos 10 mensajes
                 state['last_incoming_time'] = datetime.now(CST_TIMEZONE).isoformat()
+                logger.debug("Antes de guardar conversación")
                 utils.save_conversation(phone, conversation_state, GCS_BUCKET_NAME, GCS_CONVERSATIONS_PATH)
+                logger.debug("Conversación guardada")
 
             # Force profiling if client name is not set
             if not state.get('client_name'):
                 # Intentar extraer el nombre de la respuesta del cliente si ya se preguntó
                 if state.get('name_asked', 0) > 0 and incoming_msg:
+                    logger.debug("Intentando extraer el nombre")
                     # Intentar extraer el nombre con OpenAI
                     name = message_handler.extract_name(incoming_msg, "\n".join(state['history']))
                     logger.debug(f"OpenAI extracted name: {name}")
@@ -213,6 +227,7 @@ def whatsapp():
                         state['client_name'] = name
                         logger.info(f"Client name extracted and set: {state['client_name']}")
                         state['name_asked'] = state.get('name_asked', 0) + 1
+                        logger.debug("Guardando estado después de extraer el nombre")
                         utils.save_conversation(phone, conversation_state, GCS_BUCKET_NAME, GCS_CONVERSATIONS_PATH)
                     else:
                         logger.warning(f"Failed to extract name from message: {incoming_msg}")
@@ -224,6 +239,7 @@ def whatsapp():
                         messages = ["¡Hola! Soy Giselle de FAV Living. 😊 ¿Me podrías decir tu nombre para conocerte mejor?"]
                         utils.send_consecutive_messages(phone, messages, client, WHATSAPP_SENDER_NUMBER)
                         state['history'].append(f"Giselle: {messages[0]}")
+                        logger.debug("Guardando conversación después de preguntar por el nombre")
                         utils.save_conversation(phone, conversation_state, GCS_BUCKET_NAME, GCS_CONVERSATIONS_PATH)
                         return "Mensaje enviado", 200
                     else:
@@ -234,6 +250,7 @@ def whatsapp():
                         messages = ["Entendido, seguiré contigo como Cliente. 😊 Me encantaría ayudarte a encontrar el proyecto perfecto. ¿Estás buscando algo para inversión, para vivir, o tal vez un lugar para vacacionar?"]
                         utils.send_consecutive_messages(phone, messages, client, WHATSAPP_SENDER_NUMBER)
                         state['history'].append(f"Giselle: {messages[0]}")
+                        logger.debug("Guardando conversación después de continuar sin nombre")
                         utils.save_conversation(phone, conversation_state, GCS_BUCKET_NAME, GCS_CONVERSATIONS_PATH)
                         return "Mensaje enviado", 200
 
@@ -243,6 +260,7 @@ def whatsapp():
                 messages = [f"¡Hola {state['client_name']}! Me encantaría ayudarte a encontrar el proyecto perfecto. ¿Estás buscando algo para inversión, para vivir, o tal vez un lugar para vacacionar?"]
                 utils.send_consecutive_messages(phone, messages, client, WHATSAPP_SENDER_NUMBER)
                 state['history'].append(f"Giselle: {messages[0]}")
+                logger.debug("Guardando conversación después de preguntar por necesidades")
                 utils.save_conversation(phone, conversation_state, GCS_BUCKET_NAME, GCS_CONVERSATIONS_PATH)
                 return "Mensaje enviado", 200
 
@@ -251,6 +269,7 @@ def whatsapp():
                 messages = [f"Entendido, {state['client_name']}. ¿Cuál sería tu presupuesto aproximado para este proyecto?"]
                 utils.send_consecutive_messages(phone, messages, client, WHATSAPP_SENDER_NUMBER)
                 state['history'].append(f"Giselle: {messages[0]}")
+                logger.debug("Guardando conversación después de preguntar por presupuesto")
                 utils.save_conversation(phone, conversation_state, GCS_BUCKET_NAME, GCS_CONVERSATIONS_PATH)
                 return "Mensaje enviado", 200
 
@@ -259,6 +278,7 @@ def whatsapp():
                 messages = [f"Gracias por compartir eso, {state['client_name']}. ¿En qué horario te vendría mejor que charlemos más a fondo?"]
                 utils.send_consecutive_messages(phone, messages, client, WHATSAPP_SENDER_NUMBER)
                 state['history'].append(f"Giselle: {messages[0]}")
+                logger.debug("Guardando conversación después de preguntar por horario")
                 utils.save_conversation(phone, conversation_state, GCS_BUCKET_NAME, GCS_CONVERSATIONS_PATH)
                 return "Mensaje enviado", 200
 
@@ -267,6 +287,7 @@ def whatsapp():
                 messages = [f"Perfecto, {state['client_name']}. Una última pregunta para entenderte mejor: ¿qué tan pronto te gustaría avanzar con este proyecto?"]
                 utils.send_consecutive_messages(phone, messages, client, WHATSAPP_SENDER_NUMBER)
                 state['history'].append(f"Giselle: {messages[0]}")
+                logger.debug("Guardando conversación después de preguntar por intención de compra")
                 utils.save_conversation(phone, conversation_state, GCS_BUCKET_NAME, GCS_CONVERSATIONS_PATH)
                 return "Mensaje enviado", 200
 
