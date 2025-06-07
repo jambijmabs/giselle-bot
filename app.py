@@ -205,40 +205,24 @@ def whatsapp():
                 utils.save_conversation(phone, conversation_state, GCS_BUCKET_NAME, GCS_CONVERSATIONS_PATH)
                 logger.debug("Conversación guardada")
 
-            # Force profiling if client name is not set
-            if not state.get('client_name'):
-                # Intentar extraer el nombre de la respuesta del cliente si ya se preguntó
-                if state.get('name_asked', 0) > 0 and incoming_msg:
-                    logger.debug("Intentando extraer el nombre")
-                    # Intentar extraer el nombre con OpenAI
-                    name = message_handler.extract_name(incoming_msg, "\n".join(state['history']))
-                    logger.debug(f"OpenAI extracted name: {name}")
-
-                    # Si OpenAI no extrae el nombre, usar lógica de respaldo
-                    if not name:
-                        logger.debug("OpenAI failed to extract name, trying fallback method")
-                        # Buscar patrones comunes como "me llamo", "mi nombre es", "soy"
-                        name_match = re.search(r"(?:me llamo|mi nombre es|soy)\s+([A-Za-záéíóúÁÉÍÓÚñÑ]+)", incoming_msg, re.I)
-                        if name_match:
-                            name = name_match.group(1).capitalize()
-                            logger.debug(f"Fallback method extracted name: {name}")
-
-                    if name:
-                        state['client_name'] = name
-                        logger.info(f"Client name extracted and set: {state['client_name']}")
-                        state['name_asked'] = state.get('name_asked', 0) + 1
-                        logger.debug("Guardando estado después de extraer el nombre")
-                        utils.save_conversation(phone, conversation_state, GCS_BUCKET_NAME, GCS_CONVERSATIONS_PATH)
-                    else:
-                        logger.warning(f"Failed to extract name from message: {incoming_msg}")
-
-                # Preguntar por el nombre si no se ha extraído
-                if not state.get('client_name') and state.get('name_asked', 0) < 2:
+            # Forzar pregunta del nombre como primer paso si no hay historial o nombre confirmado
+            if not state.get('client_name') or state.get('client_name') in ['Cliente', '\u200efav'] or not state.get('name_asked'):
+                if not state.get('name_asked'):
+                    state['name_asked'] = 0
+                if state.get('name_asked', 0) < 2:
                     state['name_asked'] += 1
                     messages = ["¡Hola! Soy Giselle de FAV Living. ¿Me podrías decir tu nombre para conocerte mejor?"]
+                    utils.send_consecutive_messages(phone, messages, client, WHATSAPP_SENDER_NUMBER)
+                    state['history'].append(f"Giselle: {messages[0]}")
+                    utils.save_conversation(phone, conversation_state, GCS_BUCKET_NAME, GCS_CONVERSATIONS_PATH)
+                    return "Mensaje enviado", 200
                 else:
-                    state['client_name'] = "Cliente"  # Usar "Cliente" solo como último recurso
-                    messages = ["Gracias por tu respuesta. ¿Estás buscando algo para inversión, para vivir, o tal vez un lugar para vacacionar?"]
+                    state['client_name'] = "Cliente"
+                    messages = ["Gracias por tu interés. Como no me diste un nombre, te llamaré 'Cliente' por ahora. ¿Estás buscando algo para inversión, para vivir, o tal vez un lugar para vacacionar?"]
+                    utils.send_consecutive_messages(phone, messages, client, WHATSAPP_SENDER_NUMBER)
+                    state['history'].append(f"Giselle: {messages[0]}")
+                    utils.save_conversation(phone, conversation_state, GCS_BUCKET_NAME, GCS_CONVERSATIONS_PATH)
+                    return "Mensaje enviado", 200
 
             # Force profiling questions if not yet asked
             if state.get('client_name') and not state.get('needs_asked', False):
