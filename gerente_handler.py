@@ -19,7 +19,7 @@ def show_gerente_menu(phone, client, conversation_state):
         "6️⃣ Asignar una tarea (por ejemplo, 'Llamar a [teléfono] mañana')",
         "7️⃣ Buscar información de un cliente",
         "8️⃣ Añadir una FAQ",
-        "Escribe el número de la opción o usa el comando directamente. 😊"
+        "Escribe el número de la opción o usa el comando directamente."
     ]
     utils.send_consecutive_messages(phone, menu, client, bot_config.WHATSAPP_SENDER_NUMBER)
     conversation_state[phone]['awaiting_menu_choice'] = True
