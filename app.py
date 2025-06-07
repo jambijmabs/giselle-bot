@@ -235,9 +235,9 @@ def whatsapp():
                 # Preguntar por el nombre si no se ha extraído
                 if not state.get('client_name') and state.get('name_asked', 0) < 2:
                     state['name_asked'] += 1
-                    messages = ["¡Hola! Soy Giselle de FAV Living. 😊 ¿Me podrías decir tu nombre para conocerte mejor?"]
+                    messages = ["¡Hola! Soy Giselle de FAV Living. ¿Me podrías decir tu nombre para conocerte mejor?"]
                 else:
-                    state['client_name'] = "Cliente"
+                    state['client_name'] = "Cliente"  # Usar "Cliente" solo como último recurso
                     messages = ["Gracias por tu respuesta. ¿Estás buscando algo para inversión, para vivir, o tal vez un lugar para vacacionar?"]
 
             # Force profiling questions if not yet asked
