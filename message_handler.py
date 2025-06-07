@@ -267,7 +267,7 @@ def process_message(incoming_msg, phone, conversation_state, project_info, conve
             incoming_msg_corrected = incoming_msg_corrected.replace(word, corrected)
 
     # Detect project in the message only if profiling is complete
-    if state.get('purchase_intent_asked', False) and all([state.get('client_name'), state.get('needs'), state.get('client_budget'), state.get('preferred_time') or state.get('preferred_days'), state.get('purchase_intent')]):  # Only look for projects after profiling
+    if state.get('purchase_intent_asked', False) and all([state.get('client_name'), state.get('needs'), state.get('client_budget'), state.get('preferred_time') or state.get('preferred_days'), state.get('purchase_intent')]):
         normalized_msg = incoming_msg_corrected.replace(" ", "")
         for keyword, project in bot_config.PROJECT_KEYWORD_MAPPING.items():
             if keyword in normalized_msg:
@@ -290,7 +290,7 @@ def process_message(incoming_msg, phone, conversation_state, project_info, conve
     client_name = state.get('client_name', 'Cliente') or 'Cliente'
     logger.debug(f"Using client_name: {client_name}")
 
-    # Prepare the project data for the AI, if a project is mentioned
+    # Prepare the project data for the AI, using actual data from projects_data
     project_data = "No hay un proyecto específico seleccionado aún."
     if mentioned_project and mentioned_project in projects_data:
         project_data_dict = projects_data.get(mentioned_project, {})
@@ -304,10 +304,12 @@ def process_message(incoming_msg, phone, conversation_state, project_info, conve
         project_data += f"Ubicación: {project_data_dict.get('location', 'No especificada')}\n"
         prices = project_data_dict.get('prices', {})
         if isinstance(prices, dict):
-            project_data += "Precios: " + ", ".join([f"{k} ${v:,}" for k, v in prices.items()]) + " MXN\n"
+            project_data += "Precios: " + ", ".join([f"{k} ${v:,} MXN" for k, v in prices.items()]) + "\n"
         amenities = project_data_dict.get('amenities', [])
         if isinstance(amenities, list):
             project_data += f"Amenidades: {', '.join(amenities)}\n"
+        else:
+            project_data += "Amenidades: No especificadas\n"
 
     # Detect the intention of the message
     intention_result = detect_intention(incoming_msg_corrected, conversation_history, is_gerente=False)
@@ -384,7 +386,7 @@ def process_message(incoming_msg, phone, conversation_state, project_info, conve
             f"Historial de conversación:\n"
             f"{conversation_history}\n\n"
             f"Mensaje del cliente: {incoming_msg_corrected}\n\n"
-            f"Responde de forma breve y profesional, enfocándote en el proyecto {mentioned_project if mentioned_project else 'ninguno seleccionado aún'}, y usa emoticones solo si es necesario para empatía o entusiasmo."
+            f"Responde de forma breve y profesional, enfocándote en el proyecto {mentioned_project if mentioned_project else 'ninguno seleccionado aún'}, y usa emoticones solo si es estrictamente necesario para empatía o entusiasmo. Si no hay datos de proyectos disponibles, advierte al usuario y sugiere consultar con un gerente."
         )
         logger.debug(f"Sending request to OpenAI for client message: '{incoming_msg_corrected}', project: {mentioned_project}")
 
@@ -405,14 +407,14 @@ def process_message(incoming_msg, phone, conversation_state, project_info, conve
             messages = [reply]
 
             if not messages or messages == [""]:
-                messages = [f"Entiendo, {client_name}. Voy a consultar eso para ti, ¿te parece bien que te cuente sobre otro proyecto mientras tanto?"]
+                messages = [f"Entiendo, {client_name}. No tengo información disponible en este momento, ¿te parece bien que consulte con un gerente para darte más detalles?"]
 
             # Ensure the response ends with a question (handled by OpenAI prompt now)
             messages = ensure_question_in_response(messages, client_name)
 
             # Determine if gerente contact is needed
             if needs_gerente_contact(reply, incoming_msg_corrected, project_data, conversation_history):
-                messages.append(f"Entiendo, {client_name}. Voy a consultar eso para ti, ¿te parece bien que te cuente sobre otro proyecto mientras tanto?")
+                messages.append(f"Entiendo, {client_name}. No tengo la información exacta, ¿te parece bien que consulte con un gerente para darte más detalles?")
                 return messages, mentioned_project, True
 
         except Exception as openai_e:
