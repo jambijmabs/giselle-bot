@@ -168,7 +168,13 @@ def handle_client_message(phone, incoming_msg, num_media, media_url, profile_nam
                 raise AttributeError("utils.projects_data is not defined")
             for project, data in utils.projects_data.items():
                 project_info += f"Proyecto: {project}\n"
-                project_info += "Es un desarrollo que creo que te va a interesar.\n"
+                project_info += f"Descripción: {data.get('description', 'No disponible')}\n"
+                project_info += f"Tipo: {data.get('type', 'No especificado')}\n"
+                project_info += f"Ubicación: {data.get('location', 'No especificada')}\n"
+                if 'prices' in data:
+                    project_info += "Precios: " + ", ".join([f"{k} ${v:,} MXN" for k, v in data['prices'].items()]) + "\n"
+                if 'amenities' in data:
+                    project_info += f"Amenidades: {', '.join(data['amenities'])}\n"
                 project_info += "\n"
         except Exception as project_info_e:
             logger.error(f"Error preparing project information: {str(project_info_e)}", exc_info=True)
@@ -226,7 +232,7 @@ def handle_client_message(phone, incoming_msg, num_media, media_url, profile_nam
         if 20 <= time_since_last_incoming < 24 and not state.get('reminder_sent', False):
             reminder = [
                 f"Hola {state.get('client_name', 'Cliente')}, ha pasado un tiempo desde nuestro último mensaje.",
-                "¿Tienes alguna pregunta o quieres más detalles? 😊"
+                "¿Tienes alguna pregunta o quieres más detalles?"
             ]
             utils.send_consecutive_messages(phone, reminder, client, bot_config.WHATSAPP_SENDER_NUMBER)
             state['history'].extend([f"Giselle: {msg}" for msg in reminder])
