@@ -92,10 +92,10 @@ def download_projects_from_storage(bucket_name, gcs_path):
     try:
         storage_client = storage.Client()
         bucket = storage_client.bucket(bucket_name)
-        blobs = bucket.list_blobs(prefix=gcs_path, delimiter=None)  # No delimiter to include subdirectories
+        blobs = bucket.list_blobs(prefix=gcs_path, delimiter=None)  # Recorre recursivamente
         for blob in blobs:
             if blob.name.endswith(('.json', '.txt')) and not blob.name.endswith(('_faq.txt', '_respuestas.txt')):
-                # Extract project name from the last part of the path (e.g., CALIDRIS from PROYECTOS/CALIDRIS/CALIDRIS.txt)
+                # Extraer el nombre del proyecto desde el nombre del archivo (última parte)
                 project_name = os.path.basename(blob.name).replace('.json', '').replace('.txt', '').upper()
                 temp_file_path = f"/tmp/{os.path.basename(blob.name)}"
                 blob.download_to_filename(temp_file_path)
@@ -108,7 +108,6 @@ def download_projects_from_storage(bucket_name, gcs_path):
                     with open(temp_file_path, 'r', encoding='utf-8') as f:
                         content = f.read()
                         data = {}
-                        # Parse text content into structured data
                         name_match = re.search(r'Nombre:\s*(\w+)', content, re.IGNORECASE)
                         data['name'] = name_match.group(1) if name_match else project_name
                         location_match = re.search(r'Ubicación:\s*([\w\s,]+)', content, re.IGNORECASE)
@@ -123,6 +122,7 @@ def download_projects_from_storage(bucket_name, gcs_path):
                         amenities_match = re.search(r'Amenidades:\s*([\w\s,]+)', content, re.IGNORECASE)
                         data['amenities'] = [a.strip() for a in amenities_match.group(1).split(',')] if amenities_match else ['No especificadas']
                         projects_data[project_name] = data
+                os.remove(temp_file_path)  # Limpiar archivo temporal
     except Exception as e:
         logger.error(f"Error descargando proyectos desde GCS: {str(e)}", exc_info=True)
 
@@ -162,6 +162,7 @@ def load_projects_from_folder(gcs_path):
                             data['amenities'] = [a.strip() for a in amenities_match.group(1).split(',')] if amenities_match else ['No especificadas']
                             projects_data[project_name] = data
                     logger.info(f"Loaded project data for {project_name}: {projects_data[project_name]}")
+                    os.remove(file_path)  # Limpiar archivo temporal
         else:
             logger.warning(f"Carpeta no encontrada: {local_path}")
     except Exception as e:
