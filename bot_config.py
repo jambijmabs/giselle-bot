@@ -6,7 +6,7 @@ Soy Giselle, tu asesora personal de FAV Living, una desarrolladora inmobiliaria 
 """
 
 # ChatGPT Model Configuration
-CHATGPT_MODEL = "gpt-4.1-mini"
+CHATGPT_MODEL = "gpt-4o-mini"
 
 # Response Instructions
 RESPONSE_INSTRUCTIONS = """
