@@ -211,7 +211,17 @@ def whatsapp():
                     state['name_asked'] = 0
                 if state.get('name_asked', 0) < 2:
                     state['name_asked'] += 1
-                    messages = ["¡Hola! Soy Giselle de FAV Living. ¿Me podrías decir tu nombre para conocerte mejor?"]
+                    # Intentar extraer el nombre inmediatamente si hay mensaje
+                    if incoming_msg:
+                        name = message_handler.extract_name(incoming_msg, "\n".join(state['history']))
+                        logger.debug(f"Extracted name: {name}")
+                        if name:
+                            state['client_name'] = name
+                            logger.info(f"Client name updated to: {state['client_name']}")
+                        else:
+                            messages = ["¡Hola! Soy Giselle de FAV Living. ¿Me podrías decir tu nombre para conocerte mejor?"]
+                    else:
+                        messages = ["¡Hola! Soy Giselle de FAV Living. ¿Me podrías decir tu nombre para conocerte mejor?"]
                     utils.send_consecutive_messages(phone, messages, client, WHATSAPP_SENDER_NUMBER)
                     state['history'].append(f"Giselle: {messages[0]}")
                     utils.save_conversation(phone, conversation_state, GCS_BUCKET_NAME, GCS_CONVERSATIONS_PATH)
