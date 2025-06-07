@@ -87,32 +87,55 @@ def load_conversation_history(phone, bucket_name, gcs_path):
         return []
 
 def download_projects_from_storage(bucket_name, gcs_path):
+    global projects_data
     try:
         storage_client = storage.Client()
         bucket = storage_client.bucket(bucket_name)
         blobs = bucket.list_blobs(prefix=gcs_path)
         for blob in blobs:
-            if blob.name.endswith('.txt'):
+            if blob.name.endswith(('.json', '.txt')) and not blob.name.endswith(('_faq.txt', '_respuestas.txt')):
                 temp_file_path = f"/tmp/{os.path.basename(blob.name)}"
                 blob.download_to_filename(temp_file_path)
-                logger.info(f"Downloaded {blob.name} to {temp_file_path}")
+                logger.info(f"Descargado archivo: {blob.name} a {temp_file_path}")
+                if blob.name.endswith('.json'):
+                    with open(temp_file_path, 'r', encoding='utf-8') as f:
+                        data = json.load(f)
+                        project_name = os.path.splitext(os.path.basename(blob.name))[0].upper()
+                        projects_data[project_name] = data
+                elif blob.name.endswith('.txt'):
+                    with open(temp_file_path, 'r', encoding='utf-8') as f:
+                        content = f.read()
+                        project_name = os.path.splitext(os.path.basename(blob.name))[0].upper()
+                        projects_data[project_name] = {'description': content}
     except Exception as e:
-        logger.error(f"Failed to download projects from GCS: {str(e)}")
+        logger.error(f"Error descargando proyectos desde GCS: {str(e)}", exc_info=True)
 
 def load_projects_from_folder(gcs_path):
     global projects_data, downloadable_urls
     projects_data.clear()
     downloadable_urls.clear()
     try:
-        for project_file in os.listdir('/tmp'):
-            if project_file.endswith('.txt') and not project_file.startswith(('general_faq', 'anemona_faq', 'calidris_faq', 'kaban_faq', 'muwan_faq')):
-                project_name = project_file.replace('.txt', '').upper()
-                with open(os.path.join('/tmp', project_file), 'r', encoding='utf-8') as f:
-                    content = f.read()
-                    projects_data[project_name] = {'description': content}
-                logger.info(f"Loaded project data for {project_name}")
+        local_path = '/tmp'
+        if os.path.exists(local_path):
+            for filename in os.listdir(local_path):
+                if filename.endswith(('.json', '.txt')) and not filename.startswith(('general_faq', 'anemona_faq', 'calidris_faq', 'kaban_faq', 'muwan_faq')):
+                    file_path = os.path.join(local_path, filename)
+                    logger.debug(f"Cargando archivo local: {file_path}")
+                    if filename.endswith('.json'):
+                        with open(file_path, 'r', encoding='utf-8') as f:
+                            data = json.load(f)
+                            project_name = os.path.splitext(filename)[0].upper()
+                            projects_data[project_name] = data
+                    elif filename.endswith('.txt'):
+                        with open(file_path, 'r', encoding='utf-8') as f:
+                            content = f.read()
+                            project_name = os.path.splitext(filename)[0].upper()
+                            projects_data[project_name] = {'description': content}
+                    logger.info(f"Loaded project data for {project_name}: {projects_data[project_name]}")
+        else:
+            logger.warning(f"Carpeta no encontrada: {local_path}")
     except Exception as e:
-        logger.error(f"Failed to load projects from folder: {str(e)}")
+        logger.error(f"Error cargando proyectos desde carpeta: {str(e)}", exc_info=True)
 
 def load_gerente_respuestas(gcs_path):
     try:
